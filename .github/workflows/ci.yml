@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Weekly: a new Chrome Stable/Beta must not break agents before we notice.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -22,23 +25,97 @@ jobs:
           toolchain: stable
           components: clippy
 
-      - name: Tests (unit + browser e2e — the runner's preinstalled Chrome drives serve, ax refs and named sessions)
+      - name: Tests (unit + browser e2e on the runner's Chrome, CDP traced)
+        env:
+          BT_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
+          BT_REQUIRE_BROWSER: "1"
         run: |
           set -o pipefail
-          if ! cargo test --locked 2>&1 | tee /tmp/test.log; then
+          if ! cargo test --locked --no-fail-fast 2>&1 | tee /tmp/test.log; then
             # Surface the failure through the checks API, not just the log.
             sed -n '/^---- /,/^test result/p' /tmp/test.log | grep -v -E '^ +[0-9]+: |^ +at ' | tail -c 30000 > /tmp/test-tail.log || true
             python3 bench/ladder/annotate.py /tmp/test-tail.log "cargo test failure"
             exit 1
           fi
 
-      - name: Clippy
-        run: cargo clippy --locked -- -D warnings
-
-      - name: Ladder harness syntax check
+      - name: CDP protocol check (every command/param/enum the tests sent vs this Chrome's /json/protocol)
         run: |
-          python3 -m py_compile bench/ladder/ladder.py bench/ladder/annotate.py \
-            bench/ladder/gen_fixtures.py \
-            bench/ladder/contenders/bt_serve.py
+          set -o pipefail
+          google-chrome --version
+          bash tools/protocol_dump.sh google-chrome "$RUNNER_TEMP/protocol.json"
+          rc=0
+          python3 tools/cdp_check.py --protocol "$RUNNER_TEMP/protocol.json" \
+            --trace "$RUNNER_TEMP/cdp-trace.jsonl" --label "$(google-chrome --version)" \
+            --markdown "$RUNNER_TEMP/cdp-check.md" || rc=$?
+          python3 bench/ladder/annotate.py "$RUNNER_TEMP/cdp-check.md" "cdp check"
+          exit $rc
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Harness syntax check
+        run: |
+          python3 -m py_compile bench/ladder/*.py bench/ladder/contenders/*.py \
+            bench/site/server.py tests/fixtures/*.py tools/*.py bench/agent-eval/*.py
           node --check bench/ladder/contenders/contender_playwright.mjs
           node --check bench/ladder/contenders/contender_puppeteer.mjs
+
+  # Chrome for Testing builds: the current Stable and three milestones back,
+  # chrome-headless-shell, and Beta (non-blocking early warning).
+  browsers:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        run: python3 tools/cft_matrix.py >> "$GITHUB_OUTPUT"
+
+  compat:
+    needs: browsers
+    name: chrome ${{ matrix.browser.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.browser.channel == 'beta' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJson(needs.browsers.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - name: Download ${{ matrix.browser.kind }} ${{ matrix.browser.version }}
+        run: |
+          curl -sSfL --retry 3 -o /tmp/browser.zip "${{ matrix.browser.url }}"
+          unzip -q /tmp/browser.zip -d /tmp/browser
+          echo "CHROME_BIN=/tmp/browser/${{ matrix.browser.exe }}" >> "$GITHUB_ENV"
+      - name: e2e tests (CDP traced)
+        env:
+          BT_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
+          BT_REQUIRE_BROWSER: "1"
+          BT_CHROME_LOG: ${{ runner.temp }}/chrome.log
+        run: |
+          set -o pipefail
+          "$CHROME_BIN" --version || true
+          if ! cargo test --locked --no-fail-fast 2>&1 | tee /tmp/test.log; then
+            sed -n '/^---- /,/^test result/p' /tmp/test.log | grep -v -E '^ +[0-9]+: |^ +at ' | tail -c 30000 > /tmp/test-tail.log || true
+            python3 bench/ladder/annotate.py /tmp/test-tail.log "cargo test failure (${{ matrix.browser.label }})"
+            { grep -E -m 20 'FATAL|Check failed|Received signal|DCHECK|NOTREACHED|crash' "$BT_CHROME_LOG"; echo '---'; \
+              grep -v -E 'dbus|Fontconfig|^#[0-9]|^ +[a-z0-9]+: |^$' "$BT_CHROME_LOG" | tail -c 4000; } > /tmp/chrome-tail.log || true
+            python3 bench/ladder/annotate.py /tmp/chrome-tail.log "chrome stderr (${{ matrix.browser.label }})"
+            exit 1
+          fi
+      - name: CDP protocol check
+        run: |
+          if ! bash tools/protocol_dump.sh "$CHROME_BIN" "$RUNNER_TEMP/protocol.json" > /tmp/dump.log 2>&1; then
+            python3 bench/ladder/annotate.py /tmp/dump.log "protocol dump failure (${{ matrix.browser.label }})"
+            exit 1
+          fi
+          rc=0
+          python3 tools/cdp_check.py --protocol "$RUNNER_TEMP/protocol.json" \
+            --trace "$RUNNER_TEMP/cdp-trace.jsonl" --label "${{ matrix.browser.label }} (${{ matrix.browser.version }})" \
+            --markdown "$RUNNER_TEMP/cdp-check.md" || rc=$?
+          python3 bench/ladder/annotate.py "$RUNNER_TEMP/cdp-check.md" "cdp check ${{ matrix.browser.label }}"
+          exit $rc
