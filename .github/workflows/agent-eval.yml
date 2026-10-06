@@ -59,7 +59,12 @@ jobs:
         with:
           node-version: 24
       - name: Build browser-tool (release)
-        run: cargo build --release --locked --bin browser-tool
+        run: |
+          cargo build --release --locked --bin browser-tool
+          # setup-rust-toolchain pins the toolchain for this checkout only
+          # (rustup override); give the agents' workspaces the default a
+          # developer machine has.
+          rustup default stable
       - name: Chrome
         run: |
           echo "CHROME_BIN=$(which google-chrome)" >> "$GITHUB_ENV"

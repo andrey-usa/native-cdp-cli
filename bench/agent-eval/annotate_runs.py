@@ -24,6 +24,11 @@ def main() -> int:
     for keep in (12, 6, 3, 0):
         for run in doc.get("runs", []):
             run["shell_commands"] = run.get("shell_commands", [])[:keep]
+            # Output tails: keep the failed steps first, they explain the run.
+            steps = run.get("shell_steps", [])
+            steps = [x for x in steps if x.get("status") != "success" or "rror" in x.get("tail", "")] + \
+                    [x for x in steps if x.get("status") == "success" and "rror" not in x.get("tail", "")]
+            run["shell_steps"] = [dict(x, tail=x.get("tail", "")[-160:]) for x in steps[:keep]]
             run.pop("text", None)
             run.pop("tools_used", None)
         # One value per line: annotate.py chunks on line boundaries.

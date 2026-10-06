@@ -207,6 +207,16 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
     shells = [e.get("parameters", {}).get("command", "") for e in events
               if e.get("type") == "tool_use" and e.get("tool_name") == "run_shell_command"]
     tool_names = [e.get("tool_name") for e in events if e.get("type") == "tool_use"]
+    # What each shell command printed (tail), so a failed install or a
+    # confusing error explains itself in the summary.
+    by_id = {e.get("tool_id"): e.get("parameters", {}).get("command", "") for e in events
+             if e.get("type") == "tool_use" and e.get("tool_name") == "run_shell_command"}
+    shell_steps = []
+    for e in events:
+        if e.get("type") == "tool_result" and e.get("tool_id") in by_id:
+            out_text = e.get("output") or (e.get("error") or {}).get("message") or ""
+            shell_steps.append({"cmd": by_id[e["tool_id"]][:200], "status": e.get("status"),
+                                "tail": out_text[-300:]})
     result = next((e for e in reversed(events) if e.get("type") == "result"), {})
     stats = result.get("stats") or {}
     models = stats.get("models") or {}
@@ -224,7 +234,7 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
     errors = [e.get("message", "") for e in events if e.get("type") == "error"]
     return {
         "exit": proc.returncode, "timed_out": timed_out, "wall_s": round(wall, 1),
-        "text": text, "shell_commands": shells, "tools_used": tool_names,
+        "text": text, "shell_commands": shells, "shell_steps": shell_steps, "tools_used": tool_names,
         "requests": requests or None, "models": list(models) if isinstance(models, dict) else [],
         "tokens_in": stats.get("input_tokens"), "tokens_out": stats.get("output_tokens"),
         "tokens_total": stats.get("total_tokens"), "tokens_cached": stats.get("cached"),
