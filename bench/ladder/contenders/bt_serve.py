@@ -391,7 +391,11 @@ def main() -> int:
                     help="browser engine: chrome, edge, brave, lightpanda")
     ap.add_argument("--chromium", default="",
                     help="override browser binary path (for edge/brave)")
+    ap.add_argument("--transport", default="",
+                    help="CDP transport: pipe (default) or ws (the bt-ws A/B contender)")
     args = ap.parse_args()
+    if args.transport:
+        os.environ["BT_CDP_TRANSPORT"] = args.transport
 
     browser_tool = args.browser_tool or os.environ["BROWSER_TOOL"]
     # CHROME_BIN is only a fallback for the chrome engine. Passing it to

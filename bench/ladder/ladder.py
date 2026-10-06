@@ -100,7 +100,8 @@ NOTES: dict[str, list[str]] = {}
 
 # Process name the sampler should attribute to each contender's browser
 # (Edge/Brave run under their own binary names, not Chrome's).
-BROWSER_TAGS = {"bt-edge": "msedge", "bt-brave": "brave", "bt-lightpanda": "lightpanda"}
+BROWSER_TAGS = {"bt-edge": "msedge", "bt-brave": "brave", "bt-lightpanda": "lightpanda",
+                "bt-shell": "chrome-headless-shell"}
 
 OPTIONAL_SCENARIOS = ("eval", "cold", "realworld", "browse", "agent")
 
@@ -644,11 +645,27 @@ def bench_cold(name: str, argv: list[str], env: dict, chrome_tag: str) -> dict:
     return {"runs": runs, "best": best}
 
 
+AGENT_DAEMON_MARKERS = (b"agent-browser", b"playwright-cli", b"@playwright/cli",
+                        b"playwright-mcp", b"@playwright/mcp", b"chrome-devtools-mcp")
+
+
 def kill_agent_daemons() -> None:
-    """agent-browser leaves its daemon idling after `close`; stop it so each
-    rep starts cold like the browser-tool one does."""
+    """agent-browser / playwright-cli leave their daemons idling after
+    `close`; stop them (and any MCP server) so each rep starts cold like the
+    browser-tool one does."""
+    me = os.getpid()
     for pid, (_, name) in proc_table().items():
-        if name.startswith("agent-browser"):
+        if pid == me:
+            continue
+        hit = name.startswith("agent-browser")
+        if not hit:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read()
+                hit = any(m in cmd for m in AGENT_DAEMON_MARKERS) and b"cli_agent.py" not in cmd
+            except OSError:
+                continue
+        if hit:
             try:
                 os.kill(pid, 9)
             except (ProcessLookupError, PermissionError):
@@ -682,7 +699,7 @@ def bench_agent(tools: dict[str, list[str]], env: dict, out_dir: Path,
                    "title_b": expected["title_b"], "rows_b": expected["rows_b"]}
             ok = counts == exp and (base_extract is None
                                     or normalized_extract(str(extract)) == base_extract)
-            ops = [s["ms"] for s in doc["steps"] if s["op"] not in ("start", "close")]
+            ops = [s["ms"] for s in doc["steps"] if s["op"] not in ("start", "close", "exit")]
             runs.append({"ok": ok, "wall_s": doc["wall_s"], "steps": doc["steps"],
                          "op_mean_ms": sum(ops) / len(ops),
                          "snapshot_bytes": doc["snapshot_bytes"], "counts": counts})
@@ -858,6 +875,10 @@ def main() -> int:
         "bt-baseline": ("chrome", "CHROME_BIN"),
         "bt-edge": ("chrome", "EDGE_BIN"),
         "bt-brave": ("chrome", "BRAVE_BIN"),
+        "bt-shell": ("chrome", "SHELL_BIN"),
+        # A/B of the CDP transport in one run: same build over a DevTools
+        # WebSocket port instead of the default --remote-debugging-pipe.
+        "bt-ws": ("chrome", "CHROME_BIN"),
         "bt-lightpanda": ("lightpanda", None),
     }
     contenders: dict[str, list[str]] = {}
@@ -879,10 +900,12 @@ def main() -> int:
                 SKIPPED[bt_name] = f"no binary ({bin_env}={binary})"
                 continue
             # bt-serve (chrome) uses CHROME_BIN via env; others pass explicitly
-            if bt_name != "bt-serve":
-                args_extra = ["--engine", engine, "--chromium", binary]
-            else:
+            if bt_name == "bt-serve":
                 args_extra = []
+            elif bt_name == "bt-ws":
+                args_extra = ["--transport", "ws"]
+            else:
+                args_extra = ["--engine", engine, "--chromium", binary]
         else:
             # lightpanda: needs a working `lightpanda` binary; skip if absent
             # or broken (nightly builds can be flaky).
@@ -936,7 +959,8 @@ def main() -> int:
     # Warm each browser binary once (page cache, font cache, first-run
     # profile work) so the first contender doesn't absorb a cold-start
     # penalty the others never pay (it showed up as an 8 s first rep).
-    for bin_path in {chrome_bin, os.environ.get("EDGE_BIN"), os.environ.get("BRAVE_BIN")}:
+    for bin_path in {chrome_bin, os.environ.get("EDGE_BIN"), os.environ.get("BRAVE_BIN"),
+                     os.environ.get("SHELL_BIN")}:
         if bin_path and Path(bin_path).exists():
             try:
                 subprocess.run([bin_path, "--headless=new", "--no-sandbox",
@@ -1001,12 +1025,22 @@ def main() -> int:
             tools["browser-tool"] = ["--tool", "bt"]
         # `--only` narrows the main contenders; the agent scenario always
         # runs every agent CLI that is installed.
-        ab = os.environ.get("AGENT_BROWSER") or shutil.which("agent-browser")
-        if ab:
-            env["AGENT_BROWSER"] = ab
-            tools["agent-browser"] = ["--tool", "ab"]
-        else:
-            SKIPPED["agent-browser"] = "not installed (npm i -g agent-browser)"
+        shell = os.environ.get("SHELL_BIN")
+        if "bt-serve" in contenders and shell and Path(shell).exists():
+            tools["browser-tool (headless shell)"] = ["--tool", "bt", "--chrome", shell]
+        for label, tool, env_var, binary, hint in [
+            ("agent-browser", "ab", "AGENT_BROWSER", "agent-browser", "npm i -g agent-browser"),
+            ("playwright-cli", "pw", "PLAYWRIGHT_CLI", "playwright-cli", "npm i -g @playwright/cli"),
+            ("Playwright MCP", "pwmcp", "PLAYWRIGHT_MCP", "playwright-mcp", "npm i -g @playwright/mcp"),
+            ("Chrome DevTools MCP", "cdmcp", "CHROME_DEVTOOLS_MCP", "chrome-devtools-mcp",
+             "npm i -g chrome-devtools-mcp"),
+        ]:
+            found = os.environ.get(env_var) or shutil.which(binary)
+            if found:
+                env[env_var] = found
+                tools[label] = ["--tool", tool]
+            else:
+                SKIPPED[label] = f"not installed ({hint})"
         first = next(iter(results), None)
         base_extract = (normalized_extract(results[first]["session"]["best"]["extract"])
                         if first else None)
@@ -1146,16 +1180,19 @@ def main() -> int:
             lines.append(f"| `{name}` | {b['wall_s']:.2f}s | {ok} | {top3[:60]} | {clicked[:40]} |")
         lines.append("")
     if agent_results:
-        lines.append("### agent-style CLI: one process per step against a warm session (best of 3)")
+        lines.append("### agent tools: one CLI process (or one MCP tools/call) per step, warm session (best of 3)")
         lines.append("")
-        lines.append("| tool | total wall | mean per step | snapshot output | gate |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| tool | kind | total wall | mean per step | snapshot | snapshot output | gate |")
+        lines.append("|---|---|---|---|---|---|---|")
         for name, r in agent_results.items():
             b = r["best"]
+            kind = "MCP" if "MCP" in name else "CLI"
             if not b.get("wall_s"):
-                lines.append(f"| `{name}` | failed | — | — | ✗ |")
+                err = next((x.get("error", "") for x in r["runs"] if x.get("error")), "")
+                lines.append(f"| `{name}` | {kind} | failed | — | — | — | ✗ {err[-160:].replace('|', '/')} |")
                 continue
-            lines.append(f"| `{name}` | {b['wall_s']:.2f}s | {b['op_mean_ms']:.1f} ms | "
+            snap = next((st["ms"] for st in b.get("steps") or [] if st["op"] == "snapshot"), 0)
+            lines.append(f"| `{name}` | {kind} | {b['wall_s']:.2f}s | {b['op_mean_ms']:.1f} ms | {snap:.0f} ms | "
                          f"{b['snapshot_bytes'] / 1024:.1f} KB | {'✓' if b['ok'] else '✗'} |")
         lines.append("")
     if NOTES:

@@ -1,0 +1,130 @@
+name: agent-eval
+
+# A real, generic agent (Gemini CLI, headless, free-tier API key) does
+# realistic tasks on the local Acme Supply site with each browser tool:
+# browser-tool vs playwright-cli vs agent-browser. See bench/agent-eval/run.py.
+#
+# Needs the repository secret GEMINI_API_KEY (a free key from
+# https://aistudio.google.com/apikey). Without it only the scripted baseline
+# runs (it validates the site, the checks and the harness).
+#
+# Free-tier budget: each skilled run is ~10-30 model requests; the default
+# (5 tasks x 3 tools x 1 rep + 3 onboarding runs) stays within one day's
+# Flash-Lite quota. Results: annotations `agent eval <mode> N/M`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: "comma-separated: browser-tool,agent-browser,playwright-cli"
+        default: "browser-tool,agent-browser,playwright-cli"
+      tasks:
+        description: "comma-separated task ids (lookup,purchase,account,docs,support) or all"
+        default: "all"
+      mode:
+        description: "skilled (skill preinstalled), onboard (agent installs the tool from its docs), or both"
+        default: "both"
+      model:
+        description: "Gemini model id (free tier: a Flash-Lite model has the largest daily quota)"
+        default: "gemini-3.5-flash-lite"
+      reps:
+        description: "repetitions per tool x task"
+        default: "1"
+  schedule:
+    - cron: "41 7 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      MODEL: ${{ inputs.model || 'gemini-3.5-flash-lite' }}
+      TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}
+      TASKS: ${{ inputs.tasks || 'all' }}
+      MODE: ${{ inputs.mode || 'both' }}
+      REPS: ${{ inputs.reps || '1' }}
+      HAS_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build browser-tool (release)
+        run: cargo build --release --locked --bin browser-tool
+      - name: Chrome
+        run: |
+          echo "CHROME_BIN=$(which google-chrome)" >> "$GITHUB_ENV"
+          google-chrome --version
+      - name: Scripted baseline (site + checks + harness, no model)
+        run: |
+          python3 bench/agent-eval/run.py --agent scripted --out out/scripted
+          python3 bench/ladder/annotate.py out/scripted/table-skilled.md "agent eval scripted"
+      - name: No API key
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice title=agent eval::GEMINI_API_KEY secret not set; only the scripted baseline ran. Add a free key from https://aistudio.google.com/apikey as a repository secret."
+      - name: Install Gemini CLI
+        if: env.HAS_KEY == 'true'
+        run: |
+          npm install -g @google/gemini-cli@0.62.0
+          echo "GEMINI_BIN=$(which gemini)" >> "$GITHUB_ENV"
+      - name: Model smoke test
+        if: env.HAS_KEY == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -o pipefail
+          export GEMINI_CLI_TRUST_WORKSPACE=true
+          if ! timeout 300 gemini -p "Reply with the single word OK." -m "$MODEL" --skip-trust -o json > /tmp/smoke.json 2> /tmp/smoke.err; then
+            tail -c 3000 /tmp/smoke.err > /tmp/smoke-tail.txt; cat /tmp/smoke.json >> /tmp/smoke-tail.txt || true
+            python3 bench/ladder/annotate.py /tmp/smoke-tail.txt "gemini smoke failure"
+            exit 1
+          fi
+          python3 -c "import json; d=json.load(open('/tmp/smoke.json')); print('model reply:', d.get('response','')[:80]); print('models:', list((d.get('stats') or {}).get('models', {})))"
+      - name: Onboarding (agent installs each tool from its own docs)
+        if: env.HAS_KEY == 'true' && (env.MODE == 'onboard' || env.MODE == 'both')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 bench/agent-eval/run.py --mode onboard --tools "$TOOLS" --model "$MODEL" \
+            --gemini "$GEMINI_BIN" --reps 1 --out out/gemini | tee out-onboard.log
+          python3 bench/ladder/annotate.py out/gemini/table-onboard.md "agent eval onboard"
+      - name: Install the other tools (for skilled runs)
+        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both')
+        run: |
+          npm install -g agent-browser@0.38.2 @playwright/cli@0.1.22
+          npm ls -g --depth=0
+      - name: Skilled runs (tool installed, its own skill in the workspace)
+        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 bench/agent-eval/run.py --mode skilled --tools "$TOOLS" --tasks "$TASKS" \
+            --model "$MODEL" --gemini "$GEMINI_BIN" --reps "$REPS" --out out/gemini | tee out-skilled.log
+          python3 bench/ladder/annotate.py out/gemini/table-skilled.md "agent eval skilled"
+      - name: Summaries as annotations (json)
+        if: always() && env.HAS_KEY == 'true'
+        run: |
+          for m in onboard skilled; do
+            f=out/gemini/summary-$m.json
+            [ -f "$f" ] || continue
+            python3 - "$f" > /tmp/summary-$m.json <<'EOF'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          for r in d["runs"]:
+              r["shell_commands"] = r.get("shell_commands", [])[:40]
+          print(json.dumps(d, indent=1))
+          EOF
+            python3 bench/ladder/annotate.py /tmp/summary-$m.json "agent eval json $m"
+          done
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval
+          path: out/

@@ -111,12 +111,25 @@ jobs:
           chmod a+x /usr/local/bin/lightpanda
           lightpanda version || true
 
-      - name: Install agent-browser (agent-style CLI contender)
+      - name: Install chrome-headless-shell (bt-shell contender)
+        # Chrome for Testing's headless-only build of the same Stable Chrome:
+        # no browser UI layer, so it starts faster. Optional.
+        continue-on-error: true
+        run: |
+          url=$(curl -sSfL --retry 3 https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["channels"]["Stable"]; print(next(x["url"] for x in d["downloads"]["chrome-headless-shell"] if x["platform"]=="linux64"))')
+          curl -sSfL --retry 3 -o /tmp/shell.zip "$url"
+          unzip -q /tmp/shell.zip -d /opt
+          SHELL_BIN=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+          echo "SHELL_BIN=$SHELL_BIN" >> "$GITHUB_ENV"
+          "$SHELL_BIN" --version
+
+      - name: Install agent tools (agent-browser, playwright-cli, Playwright MCP, Chrome DevTools MCP)
         # Optional: a failed install shows up under "Skipped".
         continue-on-error: true
         run: |
-          npm install -g agent-browser@0.38.2
-          npm ls -g agent-browser
+          npm install -g agent-browser@0.38.2 @playwright/cli@0.1.22 @playwright/mcp@0.0.83 chrome-devtools-mcp@1.10.1
+          npm ls -g --depth=0
 
       - name: Build browser-tool (release)
         run: cargo build --release --bin browser-tool
