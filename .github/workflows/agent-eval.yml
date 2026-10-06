@@ -2,15 +2,19 @@ name: agent-eval
 
 # A real, generic agent (Gemini CLI, headless, free-tier API key) does
 # realistic tasks on the local Acme Supply site with each browser tool:
-# browser-tool vs playwright-cli vs agent-browser. See bench/agent-eval/run.py.
+# browser-tool vs agent-browser vs playwright-cli. One job per tool, in
+# parallel; a report job merges them. See bench/agent-eval/run.py.
 #
-# Needs GEMINI_API_KEY (a free key from https://aistudio.google.com/apikey)
-# as a secret of the `main` environment (or of the repository). Without it only the scripted baseline
-# runs (it validates the site, the checks and the harness).
+# Keys are secrets of the `main` environment. Gemini's free quota is per
+# Google Cloud project, so each tool job reads its own slot and falls back
+# to GEMINI_API_KEY when that slot is empty:
+#   browser-tool   -> GEMINI_API_KEY
+#   agent-browser  -> GEMINI_API_KEY_2
+#   playwright-cli -> GEMINI_API_KEY_3
+# Without any key only the scripted baseline runs.
 #
-# Free-tier budget: each skilled run is ~10-30 model requests; the default
-# (5 tasks x 3 tools x 1 rep + 3 onboarding runs) stays within one day's
-# Flash-Lite quota. Results: annotations `agent eval <mode> N/M`.
+# Results: annotations `agent eval <mode> N/M` and `agent eval json <mode>`
+# on the report job; per-tool tables on each tool job.
 
 on:
   workflow_dispatch:
@@ -19,7 +23,7 @@ on:
         description: "comma-separated: browser-tool,agent-browser,playwright-cli"
         default: "browser-tool,agent-browser,playwright-cli"
       tasks:
-        description: "comma-separated task ids (lookup,purchase,account,docs,support) or all"
+        description: "comma-separated task ids (lookup,purchase,account,docs,support,purchase-live) or all (local tasks)"
         default: "all"
       mode:
         description: "skilled (skill preinstalled), onboard (agent installs the tool from its docs), or both"
@@ -37,95 +41,126 @@ permissions:
   contents: read
 
 jobs:
-  eval:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
-    # GEMINI_API_KEY is an environment secret (Settings → Environments →
-    # main); a job only sees it when it names the environment.
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          slot = {"browser-tool": "GEMINI_API_KEY", "agent-browser": "GEMINI_API_KEY_2",
+                  "playwright-cli": "GEMINI_API_KEY_3"}
+          tools = [t.strip() for t in os.environ["TOOLS"].split(",") if t.strip() in slot]
+          print("matrix=" + json.dumps([{"tool": t, "key": slot[t]} for t in tools]))
+          EOF
+
+  eval:
+    needs: plan
+    name: ${{ matrix.run.tool }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run: ${{ fromJson(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     environment: main
     env:
+      TOOL: ${{ matrix.run.tool }}
       MODEL: ${{ inputs.model || 'gemini-3.5-flash-lite' }}
-      TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}
       TASKS: ${{ inputs.tasks || 'all' }}
       MODE: ${{ inputs.mode || 'both' }}
       REPS: ${{ inputs.reps || '1' }}
-      HAS_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+      HAS_KEY: ${{ secrets[matrix.run.key] != '' || secrets.GEMINI_API_KEY != '' }}
+      KEY_SLOT: ${{ secrets[matrix.run.key] != '' && matrix.run.key || 'GEMINI_API_KEY' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v2
-        with:
-          toolchain: stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Build browser-tool (release)
-        run: |
-          cargo build --release --locked --bin browser-tool
-          # setup-rust-toolchain pins the toolchain for this checkout only
-          # (rustup override); give the agents' workspaces the default a
-          # developer machine has.
-          rustup default stable
-      - name: Chrome
-        run: |
-          echo "CHROME_BIN=$(which google-chrome)" >> "$GITHUB_ENV"
-          google-chrome --version
+      - uses: ./.github/actions/agent-setup
       - name: Scripted baseline (site + checks + harness, no model)
+        if: matrix.run.tool == 'browser-tool'
         run: |
           python3 bench/agent-eval/run.py --agent scripted --out out/scripted
           python3 bench/ladder/annotate.py out/scripted/table-skilled.md "agent eval scripted"
-      - name: No API key
-        if: env.HAS_KEY != 'true'
-        run: echo "::notice title=agent eval::GEMINI_API_KEY secret not set; only the scripted baseline ran. Add a free key from https://aistudio.google.com/apikey as a repository secret."
-      - name: Install Gemini CLI
-        if: env.HAS_KEY == 'true'
+      - name: Key
         run: |
-          npm install -g @google/gemini-cli@0.62.0
-          echo "GEMINI_BIN=$(which gemini)" >> "$GITHUB_ENV"
+          if [ "$HAS_KEY" != true ]; then
+            echo "::notice title=agent eval::no Gemini key in the main environment; only the scripted baseline ran."
+          else
+            echo "::notice title=agent eval key::$TOOL used $KEY_SLOT"
+          fi
       - name: Model smoke test
         if: env.HAS_KEY == 'true'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          set -o pipefail
-          export GEMINI_CLI_TRUST_WORKSPACE=true
-          if ! timeout 300 gemini -p "Reply with the single word OK." -m "$MODEL" --skip-trust -o json > /tmp/smoke.json 2> /tmp/smoke.err; then
-            tail -c 3000 /tmp/smoke.err > /tmp/smoke-tail.txt; cat /tmp/smoke.json >> /tmp/smoke-tail.txt || true
-            python3 bench/ladder/annotate.py /tmp/smoke-tail.txt "gemini smoke failure"
+          if ! timeout 300 python3 bench/agent-eval/run.py --smoke --model "$MODEL" --gemini "$GEMINI_BIN" \
+               --out out/smoke > /tmp/smoke.txt 2>&1; then
+            tail -c 3000 /tmp/smoke.txt > /tmp/smoke-tail.txt
+            python3 bench/ladder/annotate.py /tmp/smoke-tail.txt "gemini smoke failure ($TOOL, $KEY_SLOT)"
             exit 1
           fi
-          python3 -c "import json; d=json.load(open('/tmp/smoke.json')); print('model reply:', d.get('response','')[:80]); print('models:', list((d.get('stats') or {}).get('models', {})))"
-      - name: Onboarding (agent installs each tool from its own docs)
+          cat /tmp/smoke.txt
+      - name: Onboarding (the agent installs the tool from its own docs)
         if: env.HAS_KEY == 'true' && (env.MODE == 'onboard' || env.MODE == 'both')
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          python3 bench/agent-eval/run.py --mode onboard --tools "$TOOLS" --model "$MODEL" \
-            --gemini "$GEMINI_BIN" --reps 1 --out out/gemini | tee out-onboard.log
-          python3 bench/ladder/annotate.py out/gemini/table-onboard.md "agent eval onboard"
-      - name: Install the other tools (for skilled runs)
-        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both')
+          python3 bench/agent-eval/run.py --mode onboard --tools "$TOOL" --model "$MODEL" \
+            --gemini "$GEMINI_BIN" --reps 1 --out out/gemini
+      - name: Install the tool (for skilled runs)
+        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && env.TOOL != 'browser-tool'
         run: |
-          npm install -g agent-browser@0.38.2 @playwright/cli@0.1.22
+          case "$TOOL" in
+            agent-browser) npm install -g agent-browser@0.38.2 ;;
+            playwright-cli) npm install -g @playwright/cli@0.1.22 ;;
+          esac
           npm ls -g --depth=0
       - name: Skilled runs (tool installed, its own skill in the workspace)
         if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both')
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          python3 bench/agent-eval/run.py --mode skilled --tools "$TOOLS" --tasks "$TASKS" \
-            --model "$MODEL" --gemini "$GEMINI_BIN" --reps "$REPS" --out out/gemini | tee out-skilled.log
-          python3 bench/ladder/annotate.py out/gemini/table-skilled.md "agent eval skilled"
-      # GitHub keeps at most 10 notices per step: one step per mode, and
-      # shell command lists trimmed so a full run fits.
-      - name: Onboarding runs as annotations (json)
-        if: always() && env.HAS_KEY == 'true'
-        run: python3 bench/agent-eval/annotate_runs.py out/gemini/summary-onboard.json "agent eval json onboard"
-      - name: Skilled runs as annotations (json)
-        if: always() && env.HAS_KEY == 'true'
-        run: python3 bench/agent-eval/annotate_runs.py out/gemini/summary-skilled.json "agent eval json skilled"
-      - name: Upload results
+          python3 bench/agent-eval/run.py --mode skilled --tools "$TOOL" --tasks "$TASKS" \
+            --model "$MODEL" --gemini "$GEMINI_BIN" --reps "$REPS" --out out/gemini
+      - name: Upload this tool's results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-${{ matrix.run.tool }}
+          path: out/gemini/summary-*.json
+          if-no-files-found: ignore
+
+  report:
+    needs: eval
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eval-*
+          path: dl
+      - name: Merge the tool jobs
+        run: |
+          files=$(find dl -name 'summary-*.json' | sort)
+          if [ -z "$files" ]; then echo "no model results (no key?)"; exit 0; fi
+          python3 bench/agent-eval/run.py --out out --merge $files
+      # GitHub keeps at most 10 notices per step: one step per annotation set.
+      - name: Onboarding table
+        run: python3 bench/ladder/annotate.py out/table-onboard.md "agent eval onboard"
+      - name: Skilled table
+        run: python3 bench/ladder/annotate.py out/table-skilled.md "agent eval skilled"
+      - name: Onboarding runs (json)
+        run: python3 bench/agent-eval/annotate_runs.py out/summary-onboard.json "agent eval json onboard"
+      - name: Skilled runs (json)
+        run: python3 bench/agent-eval/annotate_runs.py out/summary-skilled.json "agent eval json skilled"
+      - name: Upload merged results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agent-eval
           path: out/
+          if-no-files-found: ignore

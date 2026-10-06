@@ -1,0 +1,33 @@
+name: agent-setup
+description: >
+  What every agent-eval / agent-check job needs: browser-tool built from
+  this commit, Chrome on $CHROME_BIN and Gemini CLI on $GEMINI_BIN. The
+  other tools are installed by the job itself, after onboarding runs (an
+  onboarding agent must find its tool not installed).
+runs:
+  using: composite
+  steps:
+    - uses: actions-rust-lang/setup-rust-toolchain@v2
+      with:
+        toolchain: stable
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - name: Build browser-tool (release)
+      shell: bash
+      run: |
+        cargo build --release --locked --bin browser-tool
+        # setup-rust-toolchain pins the toolchain for this checkout only
+        # (rustup override); agent workspaces get the default a developer
+        # machine has.
+        rustup default stable
+    - name: Chrome
+      shell: bash
+      run: |
+        echo "CHROME_BIN=$(which google-chrome)" >> "$GITHUB_ENV"
+        google-chrome --version
+    - name: Gemini CLI
+      shell: bash
+      run: |
+        npm install -g @google/gemini-cli@0.62.0
+        echo "GEMINI_BIN=$(which gemini)" >> "$GITHUB_ENV"

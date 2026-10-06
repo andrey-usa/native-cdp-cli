@@ -82,6 +82,11 @@ PASS_ENV = ["CHROME_BIN", "RUSTUP_HOME", "CARGO_HOME", "NPM_CONFIG_PREFIX",
             "PLAYWRIGHT_MCP_EXECUTABLE_PATH", "PLAYWRIGHT_MCP_SANDBOX",
             "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "DO_NOT_TRACK", "DISABLE_TELEMETRY", "CI"]
 
+# Models Gemini CLI calls for its own helper work (loop detection, web fetch:
+# the `gemini-3-flash-base` alias). Seen in healthy runs; any other model in
+# a run's stats means its fallback chain replaced the requested model.
+HELPER_MODELS = {"gemini-3-flash-preview"}
+
 GEMINI_SETTINGS = {
     "security": {"auth": {"selectedType": "gemini-api-key"}, "folderTrust": {"enabled": False},
                  "environmentVariableRedaction": {"allowed": PASS_ENV}},
@@ -99,6 +104,19 @@ GEMINI_SETTINGS = {
 
 
 # --- site -------------------------------------------------------------------
+
+class LiveSite:
+    """A public website: no local server, no recorded state to check."""
+
+    def __init__(self, url: str):
+        self.base = url.rstrip("/")
+
+    def get(self, path: str):
+        raise RuntimeError("live sites have no /__state; check the answer only")
+
+    def close(self):
+        pass
+
 
 class Site:
     def __init__(self):
@@ -316,9 +334,9 @@ def final_answer(text: str) -> str:
     return m[-1].strip() if m else text.strip()[-400:]
 
 
-def check(task: dict, answer: str, site: Site) -> tuple[bool, list[str]]:
+def check(task: dict, answer: str, site) -> tuple[bool, list[str]]:
     c, why = task["check"], []
-    state = site.get("/__state")
+    state = {} if task.get("live") else site.get("/__state")
     if "answer_product" in c:
         item = site.get("/api/products?q=" + urllib.request.quote(c["answer_product"].lower()))["items"][0]
         if f"{item['price']:.2f}" not in answer:
@@ -366,6 +384,90 @@ OFF_TOOL = re.compile(r"\b(curl|wget|httpie)\b.*127\.0\.0\.1|require\(['\"](play
                       r"from playwright|import (playwright|puppeteer)|chromedp|selenium", re.I)
 
 
+def smoke(args) -> int:
+    """A minimal model call through the same settings as the eval runs, so a
+    bad key, a model id or a helper-model quota shows up before any task."""
+    root = Path(tempfile.mkdtemp(prefix="eval-smoke-"))
+    work, env = prepare("browser-tool", "skilled", root, args)
+    res = run_gemini("Reply with the single word OK.", work, env, args)
+    print(json.dumps({"exit": res["exit"], "models": res["models"], "text": res["text"][:80],
+                      "tokens_total": res["tokens_total"]}))
+    if res["exit"] != 0 or "OK" not in res["text"].upper():
+        print(res.get("stderr_tail") or "", file=sys.stderr)
+        return 1
+    extra = [m for m in res["models"] if m != args.model and m not in HELPER_MODELS]
+    if extra:
+        print(f"{args.model} fell back to {extra}: its quota is likely spent for today", file=sys.stderr)
+        return 1
+    return 0
+
+
+def render(mode: str, agent: str, model: str, runs: list, tools: list, tasks: list) -> tuple[str, list]:
+    """Markdown table (per tool, then per task) and the per-tool summary."""
+    def med(xs):
+        xs = [x for x in xs if isinstance(x, (int, float))]
+        return statistics.median(xs) if xs else None
+
+    lines = [f"### Agent eval — {mode} ({agent}, model {model if agent != 'scripted' else '—'})", "",
+             "| tool | passed | median model turns | median shell cmds | median tokens | median wall | off-tool cmds |",
+             "|---|---|---|---|---|---|---|"]
+    summary = []
+    for tool in tools:
+        rs = [r for r in runs if r["tool"] == tool and not r.get("infra")]
+        infra_n = sum(1 for r in runs if r["tool"] == tool and r.get("infra"))
+        passed = sum(1 for r in rs if r["ok"])
+        row = {"tool": tool, "passed": passed, "runs": len(rs), "infra": infra_n,
+               "median_requests": med([r.get("requests") for r in rs]),
+               "median_shell": med([r.get("shell_count") for r in rs]),
+               "median_tokens": med([r.get("tokens_total") for r in rs]),
+               "median_wall_s": med([r.get("wall_s") for r in rs]),
+               "off_tool": sum(len(r.get("off_tool_commands") or []) for r in rs)}
+        summary.append(row)
+        fmt = lambda v, f="{:.0f}": "—" if v is None else f.format(v)
+        lines.append(f"| `{tool}` | {passed}/{len(rs)}" + (f" (+{infra_n} ⚠ infra)" if infra_n else "") + f" | {fmt(row['median_requests'])} | {fmt(row['median_shell'])} | "
+                     f"{fmt(row['median_tokens'])} | {fmt(row['median_wall_s'], '{:.0f}s')} | {row['off_tool']} |")
+    lines += ["", "| task | " + " | ".join(f"`{t}`" for t in tools) + " |",
+              "|---|" + "---|" * len(tools)]
+    for task in tasks:
+        cells = []
+        for tool in tools:
+            rs = [r for r in runs if r["tool"] == tool and r["task"] == task]
+            cells.append(" ".join(
+                ("⚠" if r.get("infra") else "✓" if r["ok"] else "✗")
+                + (f" {r['tokens_total'] // 1000}K" if r.get("tokens_total") else "")
+                for r in rs) or "—")
+        lines.append(f"| {task} | " + " | ".join(cells) + " |")
+    fails = [r for r in runs if not r["ok"]]
+    if fails:
+        lines += ["", "Failures:"]
+        for r in fails:
+            lines.append(f"- `{r['tool']}` {r['task']}: {'; '.join(r.get('why', []))[:240]}"
+                         + (" (timed out)" if r.get("timed_out") else "")
+                         + (f" — {r['errors'][-1][:160]}" if r.get("errors") else ""))
+    return "\n".join(lines) + "\n", summary
+
+
+def merge(paths: list[str], out: Path) -> int:
+    """Combine per-job summary-<mode>.json files (one per parallel job)."""
+    by_mode: dict = {}
+    for p in paths:
+        doc = json.loads(Path(p).read_text())
+        m = by_mode.setdefault(doc["mode"], {"agent": doc["agent"], "model": doc["model"], "runs": []})
+        m["runs"] += doc["runs"]
+    out.mkdir(parents=True, exist_ok=True)
+    order = list(TOOLS)
+    for mode, m in by_mode.items():
+        runs = m["runs"]
+        tools = sorted({r["tool"] for r in runs}, key=lambda t: order.index(t) if t in order else 99)
+        tasks = list(dict.fromkeys(r["task"] for r in runs))
+        table, summary = render(mode, m["agent"], m["model"], runs, tools, tasks)
+        (out / f"table-{mode}.md").write_text(table)
+        (out / f"summary-{mode}.json").write_text(json.dumps(
+            {"mode": mode, "agent": m["agent"], "model": m["model"], "tools": summary, "runs": runs}, indent=1))
+        print(table)
+    return 0
+
+
 # --- main -------------------------------------------------------------------
 
 def main() -> int:
@@ -381,12 +483,23 @@ def main() -> int:
     ap.add_argument("--bt-bin-dir", default=str(REPO / "target" / "release"),
                     help="directory holding the browser-tool binary under test")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--merge", nargs="*", help="combine these summary-<mode>.json files into --out and exit")
+    ap.add_argument("--require-pass", action="store_true", help="exit 1 unless every run passed (CI checks)")
+    ap.add_argument("--smoke", action="store_true",
+                    help="one 'reply OK' call with exactly the runs' settings; prints the models used")
     args = ap.parse_args()
+    if args.merge:
+        return merge(args.merge, Path(args.out))
+    if args.smoke:
+        return smoke(args)
 
     tasks = json.loads((HERE / "tasks.json").read_text())["tasks"]
     if args.tasks != "all":
         wanted = set(args.tasks.split(","))
         tasks = [t for t in tasks if t["id"] in wanted]
+    else:
+        # Live-internet tasks are informational: only run when named.
+        tasks = [t for t in tasks if not t.get("live")]
     if args.mode == "onboard":
         tasks = [t for t in tasks if t["id"] in ("lookup", "docs")][:1] or tasks[:1]
     tools = [t for t in args.tools.split(",") if t]
@@ -399,7 +512,7 @@ def main() -> int:
         for task in tasks:
             for tool in tools:
                 root = Path(tempfile.mkdtemp(prefix=f"eval-{tool}-{task['id']}-"))
-                site = Site()
+                site = LiveSite(task["url"]) if task.get("live") else Site()
                 rec = {"tool": tool, "task": task["id"], "rep": rep, "mode": args.mode, "agent": args.agent}
                 try:
                     work, env = prepare(tool, args.mode, root, args)
@@ -413,8 +526,20 @@ def main() -> int:
                     ok, why = check(task, answer, site)
                     shells = res["shell_commands"]
                     rec.update(res)
+                    # Model quota or outage, not the tool: reported apart and
+                    # left out of pass rates.
+                    infra = re.search(r"Quota exceeded|RESOURCE_EXHAUSTED|status: (429|503)|\b503\b.*UNAVAILABLE",
+                                      (res.get("stderr_tail") or "") + " ".join(res.get("errors") or []))
+                    # On a quota error Gemini CLI silently retries on the next
+                    # model of its fallback chain: such a run no longer
+                    # measures the requested model, pass or fail.
+                    switched = [m for m in res.get("models") or [] if m != args.model and m not in HELPER_MODELS]
+                    infra_why = (["model quota/outage (infra)"] if infra and not ok else []) + \
+                                ([f"model switched to {', '.join(switched)} (infra)"] if switched else [])
                     rec.update({
-                        "ok": ok, "why": why, "answer": answer[-300:],
+                        "infra": bool(infra_why),
+                        "ok": ok and not switched, "why": why + infra_why,
+                        "answer": answer[-300:],
                         "tool_commands": sum(1 for c in shells if spec["cmd"] in c),
                         "off_tool_commands": [c[:200] for c in shells if OFF_TOOL.search(c)],
                         "shell_count": len(shells),
@@ -434,48 +559,16 @@ def main() -> int:
                       f"wall={rec.get('wall_s')}s)", flush=True)
                 (out / "runs.jsonl").open("a").write(json.dumps(rec) + "\n")
 
-    # Summary table per tool.
-    def med(xs):
-        xs = [x for x in xs if isinstance(x, (int, float))]
-        return statistics.median(xs) if xs else None
-
-    lines = [f"### Agent eval — {args.mode} ({args.agent}, model {args.model if args.agent == 'gemini' else '—'})", "",
-             "| tool | passed | median model turns | median shell cmds | median tokens | median wall | off-tool cmds |",
-             "|---|---|---|---|---|---|---|"]
-    summary = []
-    for tool in tools:
-        rs = [r for r in runs if r["tool"] == tool]
-        passed = sum(1 for r in rs if r["ok"])
-        row = {"tool": tool, "passed": passed, "runs": len(rs),
-               "median_requests": med([r.get("requests") for r in rs]),
-               "median_shell": med([r.get("shell_count") for r in rs]),
-               "median_tokens": med([r.get("tokens_total") for r in rs]),
-               "median_wall_s": med([r.get("wall_s") for r in rs]),
-               "off_tool": sum(len(r.get("off_tool_commands") or []) for r in rs)}
-        summary.append(row)
-        fmt = lambda v, f="{:.0f}": "—" if v is None else f.format(v)
-        lines.append(f"| `{tool}` | {passed}/{len(rs)} | {fmt(row['median_requests'])} | {fmt(row['median_shell'])} | "
-                     f"{fmt(row['median_tokens'])} | {fmt(row['median_wall_s'], '{:.0f}s')} | {row['off_tool']} |")
-    lines += ["", "| task | " + " | ".join(f"`{t}`" for t in tools) + " |",
-              "|---|" + "---|" * len(tools)]
-    for task in tasks:
-        cells = []
-        for tool in tools:
-            rs = [r for r in runs if r["tool"] == tool and r["task"] == task["id"]]
-            cells.append(" ".join("✓" if r["ok"] else "✗" for r in rs) or "—")
-        lines.append(f"| {task['id']} | " + " | ".join(cells) + " |")
-    fails = [r for r in runs if not r["ok"]]
-    if fails:
-        lines += ["", "Failures:"]
-        for r in fails:
-            lines.append(f"- `{r['tool']}` {r['task']}: {'; '.join(r.get('why', []))[:240]}"
-                         + (" (timed out)" if r.get("timed_out") else "")
-                         + (f" — {r['errors'][-1][:160]}" if r.get("errors") else ""))
-    table = "\n".join(lines) + "\n"
+    table, summary = render(args.mode, args.agent, args.model, runs, tools, [t["id"] for t in tasks])
     (out / f"table-{args.mode}.md").write_text(table)
     (out / f"summary-{args.mode}.json").write_text(json.dumps({"mode": args.mode, "agent": args.agent,
                                                                "model": args.model, "tools": summary,
                                                                "runs": runs}, indent=1))
+    if args.require_pass:
+        if any(not r["ok"] and not r.get("infra") for r in runs):
+            return 1
+        if any(r.get("infra") for r in runs):
+            print("::warning title=agent check::model quota/outage; the tool was not judged")
     print(table)
     return 0
 

@@ -39,7 +39,9 @@ gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
 | `cargo test failure (<browser>)` | ci.yml compat matrix | failing test output on that Chrome build |
 | `agent eval scripted/onboard/skilled N/M` | agent-eval.yml | pass table per tool and task, failure reasons |
 | `agent eval json <mode> N/M` | agent-eval.yml | every run: answer, checks, requests, tokens, shell commands |
-| `gemini smoke failure` | agent-eval.yml | why the model call failed (quota, model id, key) |
+| `gemini smoke failure (<tool>, <key slot>)` | agent-eval.yml | why the model call failed (quota, model id, key) |
+| `agent eval key` | agent-eval.yml (each tool job) | which key slot that tool's job used |
+| `agent check <task>` / `agent check json <task>` | agent-check.yml | natural purchase checks (local shop, live demo shop) |
 
 If something you need isn't there, add an annotation for it (see
 `bench/ladder/annotate.py`) — don't push a debug commit to find out.
@@ -91,10 +93,12 @@ If something you need isn't there, add an annotation for it (see
    runs the e2e tests with `BT_CDP_TRACE` and then `tools/cdp_check.py`.
    Before using a new CDP method or parameter, check it exists in the
    *oldest* supported milestone: `bash tools/protocol_dump.sh <chrome> p.json`.
-5. **Agent eval** (`agent-eval.yml`, needs the `GEMINI_API_KEY` secret):
-   Gemini CLI does the five Acme tasks with each tool. Free-tier quota is
-   per day, so narrow it with `-f tools=browser-tool -f tasks=purchase`
-   while iterating. `--agent scripted` runs the same checks locally without
+5. **Agent eval** (`agent-eval.yml`, keys in the `main` environment):
+   Gemini CLI does the five Acme tasks with each tool, one parallel job per
+   tool, each on its own key slot (`GEMINI_API_KEY`, `_2`, `_3`; free quota
+   is per Google Cloud project). Free-tier quota is per day, so narrow it
+   with `-f tools=browser-tool -f tasks=purchase` while iterating.
+   `purchase-live` (saucedemo.com) runs only when named. `--agent scripted` runs the same checks locally without
    a model:
    ```sh
    python3 bench/agent-eval/run.py --agent scripted --out /tmp/eval
@@ -170,7 +174,11 @@ If something you need isn't there, add an annotation for it (see
   `shell_steps` (command + output tail) before blaming a tool: the first
   runs blamed nobody for a 503 from Gemini's own web fetch, and found that
   Gemini CLI strips the shell environment in GitHub Actions (hence
-  `PASS_ENV` in `run.py`). Keep the model,
+  `PASS_ENV` in `run.py`). When the run's model hits its daily quota,
+  Gemini CLI silently retries on the next model of its fallback chain
+  (`gemini-3.8-flash`, 20 free requests a day, then a 429): runs that hit
+  a quota or switched models are marked `infra` and excluded from pass
+  rates, and the smoke test fails when the model already falls back. Keep the model,
   prompt template, settings, Chrome and site identical across tools. Each
   tool gets the skill its own vendor ships.
 - For agents, **tokens matter more than milliseconds**. An `ax` that takes
@@ -205,4 +213,4 @@ If something you need isn't there, add an annotation for it (see
 | `tools/` | `cdp_check.py`, `protocol_dump.sh`, `cft_matrix.py` (Chrome for Testing matrix) |
 | `.claude/skills/browser-tool/SKILL.md` | the agent guide, embedded in the binary (`browser-tool skill`) |
 | `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/` (incl. `cli_agent.py` for the agent CLI scenario), `annotate.py` |
-| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix), `bench.yml` (manual), `agent-eval.yml` (manual/weekly), `vendor.yml`, `release.yml` (tags) |
+| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix, install.sh), `bench.yml` (manual), `agent-eval.yml` (manual/weekly, parallel per tool), `agent-check.yml` (push/PR/nightly natural purchase checks), `vendor.yml`, `release.yml` (tags) |
