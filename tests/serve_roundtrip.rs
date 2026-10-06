@@ -61,36 +61,17 @@ fn roundtrip(
     serde_json::from_str(line.trim()).expect("response must be one JSON object")
 }
 
-/// True when a Chrome/Chromium/Edge binary exists for the serve test to
-/// launch (mirrors `browser::resolve_executable`'s common-path probe).
+/// True when the tool itself would find a browser to launch (same resolver
+/// as `browser-tool`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
+/// caches). `BT_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
+/// so a runner without Chrome can't pass the e2e tests by skipping them.
 fn chrome_available() -> bool {
-    for var in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
-        if let Ok(p) = std::env::var(var) {
-            for exe in [
-                format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe"),
-                format!("{p}\\Google\\Chrome\\Application\\chrome.exe"),
-            ] {
-                if std::path::Path::new(&exe).exists() {
-                    return true;
-                }
-            }
-        }
-    }
-    if let Ok(p) = std::env::var("LOCALAPPDATA") {
-        if std::path::Path::new(&format!("{p}\\Google\\Chrome\\Application\\chrome.exe")).exists() {
-            return true;
-        }
-    }
-    [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ]
-    .iter()
-    .any(|p| std::path::Path::new(p).exists())
+    let found = browser_tool::browser::resolve_executable_for(None, true).is_some();
+    assert!(
+        found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
+        "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
+    );
+    found
 }
 
 /// Drive a full serve session offline: every page is a `data:` URL, so no
@@ -179,7 +160,7 @@ fn browser_tool_serve_protocol_roundtrip() {
     let ax = roundtrip(
         &mut stdin,
         &mut stdout,
-        &serde_json::json!({"id": 11, "op": "ax"}),
+        &serde_json::json!({"id": 11, "op": "ax", "format": "json"}),
     );
     assert_eq!(ax["ok"], true, "{ax}");
     let nodes = ax["result"].as_array().expect("ax returns an array");
@@ -296,6 +277,16 @@ fn run_tool(args: &[&str]) -> (bool, Value) {
     (out.status.success(), value)
 }
 
+/// Run `browser-tool <args>`; returns (success, raw stdout).
+fn run_tool_raw(args: &[&str]) -> (bool, String) {
+    let out = Command::new(tool_exe())
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run browser-tool");
+    (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Named session: a detached server keeps one browser warm across separate
 /// processes — the way an agent's shell tool calls arrive.
 #[test]
@@ -322,12 +313,11 @@ fn browser_tool_named_session_across_processes() {
     assert_eq!(title["result"], "Session Test", "same warm tab across calls");
     let (ok, ax) = run_tool(&["--session", s, "ax"]);
     assert!(ok, "ax: {ax}");
-    assert!(
-        ax["result"]
-            .as_array()
-            .is_some_and(|nodes| nodes.iter().any(|n| n["role"] == "link" && n["name"] == "Link")),
-        "{ax}"
-    );
+    let tree = ax["result"].as_str().expect("ax is a text tree by default");
+    assert!(tree.starts_with("page \"Session Test\""), "{tree}");
+    assert!(tree.contains("- link \"Link\" [ref="), "{tree}");
+    let (ok, raw) = run_tool_raw(&["--session", s, "--raw", "title"]);
+    assert!(ok && raw == "Session Test\n", "--raw prints the bare result: {raw:?}");
 
     let (ok, bye) = run_tool(&["--session", s, "quit"]);
     assert!(ok, "quit: {bye}");

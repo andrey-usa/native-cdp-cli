@@ -1,9 +1,9 @@
 [package]
 name = "browser-tool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 default-run = "browser-tool"
-description = "From-scratch CDP CLI for AI-agentic browser exploration: native Rust Chrome DevTools Protocol engine, JSON-lines protocol, serve mode and one-shots."
+description = "Drive headless Chrome from the shell, one command per step: a native Rust CDP CLI for AI agents (accessibility-tree refs, sessions, tabs, iframes, dialogs) plus a JSON-lines serve mode."
 license = "MIT"
 
 [dependencies]

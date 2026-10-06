@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 
-use crate::cdp::{self, Browser, LaunchOptions, Page};
+use crate::cdp::{self, AxOptions, Browser, DialogPolicy, LaunchOptions, Page, Target, DEFAULT_ELEMENT_WAIT};
 
 /// Tokio runtime for the CDP engine: 2 workers is plenty for a sequential
 /// CLI, and keeps RSS/CPU far below a default multi-thread runtime.
@@ -64,9 +64,32 @@ const CHROME_FLAGS: &[&str] = &[
     "--use-mock-keychain",
     "--force-color-profile=srgb",
     "--disable-site-isolation-trials",
-    "--disable-features=Translate,TranslateUI,OptimizationHints,MediaRouter,DialMediaRouteProvider,AutofillServerCommunication,CertificateTransparencyComponentUpdater,InterestFeedContentSuggestions,site-per-process",
+    // Not `OptimizationHints`: disabling it makes Chrome 151 segfault on the
+    // first page (bisected in chrome-bisect run 37464048004; every other
+    // feature here is fine there). Its hint fetches are network work that
+    // `--disable-background-networking` already stops.
+    "--disable-features=Translate,TranslateUI,MediaRouter,DialMediaRouteProvider,AutofillServerCommunication,CertificateTransparencyComponentUpdater,InterestFeedContentSuggestions,site-per-process",
     "--enable-features=NetworkService,NetworkServiceInProcess",
 ];
+
+/// [`CHROME_FLAGS`] adjusted by two diagnostic knobs, for bisecting a
+/// browser-version-specific failure in CI without a rebuild:
+/// `BT_DROP_FLAGS` (comma-separated prefixes to remove) and
+/// `BT_EXTRA_FLAGS` (space-separated flags to add).
+fn chrome_flags() -> Vec<String> {
+    let drop: Vec<String> = std::env::var("BT_DROP_FLAGS")
+        .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    let mut flags: Vec<String> = CHROME_FLAGS
+        .iter()
+        .filter(|f| !drop.iter().any(|d| f.starts_with(d.as_str())))
+        .map(|f| f.to_string())
+        .collect();
+    if let Ok(extra) = std::env::var("BT_EXTRA_FLAGS") {
+        flags.extend(extra.split_whitespace().map(str::to_string));
+    }
+    flags
+}
 
 /// Common Chromium/Chrome/Edge install paths used when no override is given.
 fn common_executables() -> Vec<String> {
@@ -89,16 +112,71 @@ fn common_executables() -> Vec<String> {
     paths
 }
 
+/// Browsers installed by Playwright / Puppeteer / `@puppeteer/browsers`
+/// (newest first), so a machine with only those still works out of the box.
+/// For headless sessions chrome-headless-shell comes first: it starts 2-3x
+/// faster than full Chrome (no browser UI layer to bring up).
+fn cached_browsers(headless: bool) -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut roots = vec![format!("{home}/.cache/ms-playwright")];
+    if let Ok(p) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
+        roots.insert(0, p);
+    }
+    let pick = |root: &str, prefix: &str, rel: &[&str]| -> Vec<String> {
+        let mut dirs: Vec<String> = std::fs::read_dir(root)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with(prefix))
+                    .collect()
+            })
+            .unwrap_or_default();
+        dirs.sort_by(|a, b| b.cmp(a));
+        dirs.iter()
+            .flat_map(|d| rel.iter().map(move |r| format!("{root}/{d}/{r}")))
+            .filter(|p| Path::new(p).is_file())
+            .collect()
+    };
+    let mut shells = Vec::new();
+    let mut full = Vec::new();
+    for root in &roots {
+        shells.extend(pick(root, "chromium_headless_shell-", &[
+            "chrome-linux/headless_shell",
+            "chrome-headless-shell-linux64/chrome-headless-shell",
+            "chrome-mac/headless_shell",
+        ]));
+        full.extend(pick(root, "chromium-", &[
+            "chrome-linux/chrome",
+            "chrome-linux64/chrome",
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        ]));
+    }
+    let puppeteer = format!("{home}/.cache/puppeteer");
+    shells.extend(pick(&format!("{puppeteer}/chrome-headless-shell"), "linux-", &["chrome-headless-shell-linux64/chrome-headless-shell"]));
+    full.extend(pick(&format!("{puppeteer}/chrome"), "linux-", &["chrome-linux64/chrome"]));
+    if headless {
+        shells.into_iter().chain(full).collect()
+    } else {
+        full
+    }
+}
+
 /// Resolve which executable to launch, honoring (in order) an explicit CLI
-/// override, `$CDP_CLI_CHROMIUM` / `$RUSTWRIGHT_CHROMIUM` / `$CHROME_BIN`,
-/// then the common-path probe.
+/// override, `$BROWSER_TOOL_CHROMIUM` / `$CDP_CLI_CHROMIUM` /
+/// `$RUSTWRIGHT_CHROMIUM` / `$CHROME_BIN`, the common install paths, then
+/// browsers cached by Playwright/Puppeteer.
 pub fn resolve_executable(cli_override: Option<&str>) -> Option<String> {
+    resolve_executable_for(cli_override, true)
+}
+
+/// [`resolve_executable`] for a headed or headless launch.
+pub fn resolve_executable_for(cli_override: Option<&str>, headless: bool) -> Option<String> {
     if let Some(path) = cli_override {
         if !path.trim().is_empty() {
             return Some(path.to_string());
         }
     }
-    for var in ["CDP_CLI_CHROMIUM", "RUSTWRIGHT_CHROMIUM", "CHROME_BIN"] {
+    for var in ["BROWSER_TOOL_CHROMIUM", "CDP_CLI_CHROMIUM", "RUSTWRIGHT_CHROMIUM", "CHROME_BIN"] {
         if let Ok(path) = std::env::var(var) {
             if !path.trim().is_empty() {
                 return Some(path);
@@ -108,6 +186,7 @@ pub fn resolve_executable(cli_override: Option<&str>) -> Option<String> {
     common_executables()
         .into_iter()
         .find(|p| Path::new(p).exists())
+        .or_else(|| cached_browsers(headless).into_iter().next())
 }
 
 /// True when `--engine` selects the Lightpanda CDP server instead of Chromium.
@@ -171,6 +250,11 @@ fn which_lightpanda() -> Result<String> {
     anyhow::bail!("lightpanda not on PATH")
 }
 
+/// How long a click on a link/submit button or an Enter key waits for the
+/// navigation it probably triggers to be requested (it can trail the input
+/// event's CDP reply by a task or two). Ends early once it arrives.
+const NAV_GRACE: Duration = Duration::from_millis(150);
+
 /// One browser + tab list, driven by the from-scratch CDP engine.
 pub struct BrowserSession {
     browser: Browser,
@@ -184,6 +268,10 @@ pub struct BrowserSession {
     /// `commit` wait instead.
     lightpanda: bool,
     timeout_ms: f64,
+    /// (tab target, navigation generation) whose load we stopped waiting
+    /// for after a full navigation timeout (a page that streams forever,
+    /// a hung server). Later ops don't wait on it again.
+    abandoned: std::sync::Mutex<Option<(String, u64)>>,
     /// Owns the tokio runtime; declared LAST so it drops last, after the
     /// browser/client/pages that use it.
     _runtime: tokio::runtime::Runtime,
@@ -200,6 +288,25 @@ impl BrowserSession {
         executable: Option<&str>,
         nav_timeout_ms: f64,
     ) -> Result<Self> {
+        Self::launch_with(engine, headless, executable, nav_timeout_ms, None)
+    }
+
+    /// [`BrowserSession::launch`] with an explicit CDP transport: `pipe`
+    /// (default) or `ws` (a DevTools port, e.g. to attach Chrome DevTools).
+    pub fn launch_with(
+        engine: &str,
+        headless: bool,
+        executable: Option<&str>,
+        nav_timeout_ms: f64,
+        transport: Option<&str>,
+    ) -> Result<Self> {
+        let transport = transport
+            .map(str::to_string)
+            .or_else(|| std::env::var("BT_CDP_TRANSPORT").ok())
+            .unwrap_or_else(|| "pipe".into());
+        if !matches!(transport.as_str(), "pipe" | "ws") {
+            bail!("--transport takes pipe|ws, got {transport:?}");
+        }
         let launch_started = std::time::Instant::now();
         let lightpanda = is_lightpanda(engine);
         let runtime = engine_runtime()?;
@@ -211,15 +318,15 @@ impl BrowserSession {
             // No Chromium flags, no shim, no X server involved.
             let bin = resolve_lightpanda_bin(executable)?;
             let browser = Browser::launch_lightpanda(&handle, &bin)?;
-            eprintln!(
+            crate::timing::log(&format!(
                 "[browser] engine=lightpanda launched {} via {bin}",
                 browser.ws_url()
-            );
+            ));
             (browser, bin)
         } else {
-            let Some(exe) = resolve_executable(executable) else {
+            let Some(exe) = resolve_executable_for(executable, headless) else {
                 bail!(
-                    "no Chromium/Chrome/Edge executable found — install Chrome/Edge or set --chromium <path> or $CDP_CLI_CHROMIUM"
+                    "no Chrome/Chromium/Edge found — install Chrome, or `npx @puppeteer/browsers install chrome-headless-shell@stable` and pass its path via --chromium or $CHROME_BIN"
                 );
             };
             let browser = Browser::launch(
@@ -227,14 +334,15 @@ impl BrowserSession {
                 &LaunchOptions {
                     exe: exe.clone(),
                     headless,
-                    chrome_flags: CHROME_FLAGS.iter().map(|f| f.to_string()).collect(),
+                    chrome_flags: chrome_flags(),
                     debugging_port: None,
+                    pipe: transport == "pipe",
                 },
             )?;
-            eprintln!(
+            crate::timing::log(&format!(
                 "[browser] engine=chrome launched {} via {exe} (headless={headless})",
                 browser.ws_url(),
-            );
+            ));
             (browser, exe)
         };
         crate::timing::record("browser_up", launch_started);
@@ -242,7 +350,11 @@ impl BrowserSession {
         let page = if lightpanda {
             browser.new_page_lightpanda(Some("about:blank"))?
         } else {
-            browser.new_page(Some("about:blank"))?
+            // The first command is where a browser that died at startup
+            // (missing libraries, bad flag) shows up: say why.
+            browser
+                .new_page(Some("about:blank"))
+                .map_err(|e| anyhow::anyhow!("{e:#} ({})", browser.death_report()))?
         };
         crate::timing::record("first_page", page_started);
         crate::timing::record("launch_total", launch_started);
@@ -253,12 +365,24 @@ impl BrowserSession {
             exe,
             lightpanda,
             timeout_ms: nav_timeout_ms,
+            abandoned: std::sync::Mutex::new(None),
             _runtime: runtime,
         })
     }
 
     fn timeout(&self, override_ms: Option<f64>) -> Duration {
         Duration::from_secs_f64(override_ms.unwrap_or(self.timeout_ms) / 1000.0)
+    }
+
+    /// (element auto-wait, CDP command timeout) for an element op: the op's
+    /// own `timeout_ms` bounds the wait; without one, the element wait is
+    /// [`DEFAULT_ELEMENT_WAIT`] (fast feedback on a wrong selector).
+    fn element_budget(&self, override_ms: Option<f64>) -> (Duration, Duration) {
+        let wait = match override_ms {
+            Some(ms) => Duration::from_secs_f64(ms / 1000.0),
+            None => DEFAULT_ELEMENT_WAIT.min(self.timeout(None)),
+        };
+        (wait, self.timeout(None).max(wait + Duration::from_secs(1)))
     }
 
     fn active_tab(&self) -> &Page {
@@ -323,6 +447,108 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Adopt tabs the page opened itself (`target=_blank`, `window.open`)
+    /// and drop tabs the page closed (`window.close()`). A newly opened tab
+    /// becomes active, as it would in a visible browser. Returns the
+    /// indices of adopted tabs.
+    pub fn sync_tabs(&mut self) -> Vec<usize> {
+        let shared = std::sync::Arc::clone(self.browser.shared());
+        let mut adopted = Vec::new();
+        for target_id in shared.take_opened() {
+            if self.pages.iter().any(|p| p.target_id() == target_id) {
+                continue;
+            }
+            match self.browser.attach_page(&target_id) {
+                Ok(page) => {
+                    self.pages.push(page);
+                    self.active = self.pages.len() - 1;
+                    adopted.push(self.active);
+                }
+                Err(e) => eprintln!("[browser] could not adopt new tab {target_id}: {e:#}"),
+            }
+        }
+        for target_id in shared.take_destroyed() {
+            if self.pages.len() <= 1 {
+                break;
+            }
+            if let Some(index) = self.pages.iter().position(|p| p.target_id() == target_id) {
+                shared.unregister(self.pages[index].session_id());
+                self.pages.remove(index);
+                if self.active >= self.pages.len() {
+                    self.active = self.pages.len() - 1;
+                } else if index < self.active {
+                    self.active -= 1;
+                }
+            }
+        }
+        adopted
+    }
+
+    /// Dialogs answered since the last call (`{type, message, accepted}`).
+    pub fn take_dialogs(&self) -> Vec<serde_json::Value> {
+        self.browser.shared().take_dialogs()
+    }
+
+    /// How future `alert`/`confirm`/`prompt` dialogs are answered.
+    pub fn set_dialog_policy(&self, accept: bool, prompt_text: Option<String>) {
+        self.browser.set_dialog_policy(DialogPolicy { accept, prompt_text });
+    }
+
+    /// Wait for a navigation an earlier action started in the active tab.
+    /// Never fails: after the full navigation timeout the load is
+    /// abandoned (later ops don't wait on it again) and the op goes on with
+    /// whatever document is there. Returns true when the tab settled.
+    pub fn settle(&self) -> bool {
+        self.settle_within(self.timeout(None))
+    }
+
+    /// [`BrowserSession::settle`] bounded by `budget` (an op's own
+    /// timeout). Only a wait that used the whole navigation timeout marks
+    /// the load abandoned; a shorter op budget leaves it for the next op.
+    pub fn settle_within(&self, budget: Duration) -> bool {
+        let tab = self.active_tab();
+        let key = (tab.target_id().to_string(), tab.nav_generation());
+        if self.abandoned.lock().ok().is_some_and(|a| a.as_ref() == Some(&key)) {
+            return false;
+        }
+        if tab.settle(budget).is_ok() {
+            return true;
+        }
+        if budget >= self.timeout(None) {
+            if let Ok(mut a) = self.abandoned.lock() {
+                *a = Some(key);
+            }
+        }
+        false
+    }
+
+    /// Settle after an action: up to the op's own `timeout_ms` if it gave
+    /// one, else the navigation timeout.
+    fn settle_for(&self, timeout_ms: Option<f64>) -> bool {
+        self.settle_within(timeout_ms.map(|ms| Duration::from_secs_f64(ms / 1000.0)).unwrap_or_else(|| self.timeout(None)))
+    }
+
+    /// The default navigation timeout (`--timeout-ms`).
+    pub fn nav_timeout(&self) -> Duration {
+        self.timeout(None)
+    }
+
+    /// True while the active tab's document is still loading (before
+    /// DOMContentLoaded), e.g. after a settle gave up.
+    pub fn is_loading(&self) -> bool {
+        self.active_tab().is_loading()
+    }
+
+    /// Current URL and title in one round trip.
+    pub fn url_title(&self) -> (String, String) {
+        let v = self
+            .active_tab()
+            .evaluate("[location.href, document.title]", self.timeout(None))
+            .unwrap_or_default();
+        let get = |i: usize| v.get(i).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        (get(0), get(1))
+    }
+
     /// Current page URL.
     pub fn url(&self) -> String {
         self.active_tab().url(self.timeout(None)).unwrap_or_default()
@@ -330,31 +556,30 @@ impl BrowserSession {
 
     /// Navigate the active tab and wait for `load`.
     pub fn goto(&self, url: &str) -> Result<()> {
-        self.goto_with_retry(url, 3)
+        self.goto_wait(url, "load", None)
     }
 
-    /// Navigate with retry; third-party trackers (doubleclick, pinterest, …)
-    /// can abort the main-frame load mid-flight, which is benign.
+    /// Navigate the active tab; `wait` is `load`, `domcontentloaded` or
+    /// `commit`. Retries benign aborts (third-party trackers can abort the
+    /// main-frame load mid-flight).
     ///
     /// Lightpanda sessions use a `commit` wait: Lightpanda emits no
     /// `Page.loadEventFired`, so a full wait would just burn the navigation
     /// timeout. Callers confirm content by polling the DOM.
-    pub fn goto_with_retry(&self, url: &str, max_attempts: usize) -> Result<()> {
-        let timeout = if self.lightpanda {
-            Duration::from_millis(500)
+    pub fn goto_wait(&self, url: &str, wait: &str, timeout_ms: Option<f64>) -> Result<()> {
+        if !matches!(wait, "load" | "domcontentloaded" | "commit") {
+            bail!("--wait takes load|domcontentloaded|commit, got {wait:?}");
+        }
+        let (wait, timeout) = if self.lightpanda {
+            ("commit", Duration::from_millis(500))
         } else {
             // Honors --timeout-ms (was a hard-coded 40 s per attempt).
-            self.timeout(None)
+            (wait, self.timeout(timeout_ms))
         };
+        let max_attempts = 3;
         let mut attempt = 0;
         loop {
-            let result = if self.lightpanda {
-                // Commit wait: Page.navigate returning is the commit.
-                self.active_tab().navigate_commit(url, timeout)
-            } else {
-                self.active_tab().navigate(url, timeout)
-            };
-            match result {
+            match self.active_tab().navigate(url, wait, timeout) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     let msg = format!("{e:#}");
@@ -362,9 +587,7 @@ impl BrowserSession {
                         return Ok(());
                     }
                     attempt += 1;
-                    let transient = msg.contains("ERR_ABORTED")
-                        || msg.contains("ERR_CONNECTION_RESET")
-                        || msg.contains("net::");
+                    let transient = msg.contains("ERR_ABORTED") || msg.contains("ERR_CONNECTION_RESET");
                     if transient && attempt <= max_attempts {
                         eprintln!("[browser] nav hiccup (attempt {attempt}): {msg}");
                         std::thread::sleep(Duration::from_millis(500 * attempt as u64));
@@ -378,8 +601,19 @@ impl BrowserSession {
 
     /// Navigate without waiting for load (commit semantics).
     pub fn goto_commit(&self, url: &str, timeout_ms: Option<f64>) -> Result<()> {
-        self.active_tab()
-            .navigate_commit(url, self.timeout(timeout_ms))
+        self.active_tab().navigate_commit(url, self.timeout(timeout_ms))
+    }
+
+    pub fn back(&self) -> Result<()> {
+        self.active_tab().history(-1, self.timeout(None))
+    }
+
+    pub fn forward(&self) -> Result<()> {
+        self.active_tab().history(1, self.timeout(None))
+    }
+
+    pub fn reload(&self) -> Result<()> {
+        self.active_tab().reload(self.timeout(None))
     }
 
     /// Run a JS expression in the active tab; result must be JSON.
@@ -399,27 +633,105 @@ impl BrowserSession {
         Ok(serde_json::from_value(value)?)
     }
 
+    /// Click the element `target` names (trusted mouse click when hittable).
+    /// If the click starts a navigation, waits for the new document.
+    pub fn click_target(&self, target: &Target, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        let generation = self.active_tab().nav_generation();
+        let point = self.active_tab().click(target, wait, timeout)?;
+        if point.get("nav").and_then(|v| v.as_bool()) == Some(true) {
+            self.active_tab().navigation_started(generation, NAV_GRACE);
+        }
+        self.settle_for(timeout_ms);
+        Ok(point)
+    }
+
+    pub fn hover(&self, target: &Target, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        self.active_tab().hover(target, wait, timeout)
+    }
+
+    pub fn fill_target(&self, target: &Target, value: &str, timeout_ms: Option<f64>) -> Result<()> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        self.active_tab().fill(target, value, wait, timeout)
+    }
+
+    pub fn select(&self, target: &Target, values: &[String], timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        let chosen = self.active_tab().select(target, values, wait, timeout)?;
+        self.settle_for(timeout_ms);
+        Ok(chosen)
+    }
+
+    pub fn press(&self, target: Option<&Target>, key: &str, timeout_ms: Option<f64>) -> Result<()> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        let generation = self.active_tab().nav_generation();
+        let may_navigate = self.active_tab().press(target, key, wait, timeout)?;
+        if may_navigate {
+            // Enter in a form submits it (implicit submission); on a link
+            // it follows it.
+            self.active_tab().navigation_started(generation, NAV_GRACE);
+        }
+        self.settle_for(timeout_ms);
+        Ok(())
+    }
+
+    pub fn type_text(&self, target: Option<&Target>, text: &str, timeout_ms: Option<f64>) -> Result<()> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        self.active_tab().type_text(target, text, wait, timeout)?;
+        self.settle_for(timeout_ms);
+        Ok(())
+    }
+
+    pub fn scroll(&self, target: Option<&Target>, dy: Option<f64>, to: Option<&str>, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        self.active_tab().scroll(target, dy, to, wait, timeout)
+    }
+
+    pub fn upload(&self, target: &Target, files: &[String], timeout_ms: Option<f64>) -> Result<()> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        self.active_tab().upload(target, files, wait, timeout)
+    }
+
+    /// Poll `js_predicate` (an expression returning a boolean) every 100 ms
+    /// until true or `timeout_ms` (default: the element wait) runs out.
+    /// Survives navigations (the predicate is re-evaluated in each new
+    /// document); returns the waited milliseconds.
+    pub fn wait_until(&self, js_predicate: &str, what: &str, timeout_ms: Option<f64>) -> Result<f64> {
+        let (wait, timeout) = self.element_budget(timeout_ms);
+        let started = std::time::Instant::now();
+        loop {
+            // A navigation in flight: wait for it, but never past this
+            // op's own budget.
+            self.settle_within(wait.saturating_sub(started.elapsed()));
+            if let Ok(true) = self.active_tab().check(js_predicate, timeout) {
+                return Ok((started.elapsed().as_secs_f64() * 1000.0).round());
+            }
+            if started.elapsed() >= wait {
+                bail!("wait: {what} not met within {} ms", wait.as_millis());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// Click the first element matching `selector`.
     pub fn click(&self, selector: &str, timeout_ms: Option<f64>) -> Result<()> {
-        self.active_tab().click(selector, self.timeout(timeout_ms))
+        self.click_target(&Target::Selector(selector.to_string()), timeout_ms).map(|_| ())
     }
 
     /// Fill the first matching field with `value`.
     pub fn fill(&self, selector: &str, value: &str, timeout_ms: Option<f64>) -> Result<()> {
-        self.active_tab()
-            .fill(selector, value, self.timeout(timeout_ms))
+        self.fill_target(&Target::Selector(selector.to_string()), value, timeout_ms)
     }
 
     /// Click the node with this `backendNodeId` (an `ax` ref).
     pub fn click_ref(&self, backend_node_id: u64, timeout_ms: Option<f64>) -> Result<()> {
-        self.active_tab()
-            .click_ref(backend_node_id, self.timeout(timeout_ms))
+        self.click_target(&Target::Ref(backend_node_id), timeout_ms).map(|_| ())
     }
 
     /// Fill the node with this `backendNodeId` (an `ax` ref) with `value`.
     pub fn fill_ref(&self, backend_node_id: u64, value: &str, timeout_ms: Option<f64>) -> Result<()> {
-        self.active_tab()
-            .fill_ref(backend_node_id, value, self.timeout(timeout_ms))
+        self.fill_target(&Target::Ref(backend_node_id), value, timeout_ms)
     }
 
     /// First element's text content for `selector`, if present.
@@ -442,18 +754,25 @@ impl BrowserSession {
         self.active_tab().title(self.timeout(None))
     }
 
-    /// Viewport PNG screenshot bytes (`full_page` captures beyond viewport).
-    /// Accessibility tree snapshot for the active tab (agent-friendly).
+    /// Accessibility snapshot of the active tab (text tree by default).
+    pub fn ax(&self, opts: &AxOptions, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        self.active_tab().ax_tree(self.timeout(timeout_ms), opts)
+    }
+
+    /// Legacy flat accessibility snapshot (`[{ref, role, name, value?}]`).
     pub fn ax_tree(
         &self,
         max_depth: Option<u32>,
         all: bool,
         timeout_ms: Option<f64>,
     ) -> Result<serde_json::Value> {
-        self.active_tab()
-            .ax_tree(self.timeout(timeout_ms), max_depth, all)
+        self.ax(
+            &AxOptions { max_depth, json: true, all, ..AxOptions::default() },
+            timeout_ms,
+        )
     }
 
+    /// Viewport PNG screenshot bytes (`full_page` captures beyond viewport).
     pub fn screenshot_png(&self, full_page: bool) -> Result<Vec<u8>> {
         self.active_tab()
             .screenshot_png(self.timeout(None), full_page)
@@ -478,6 +797,11 @@ impl BrowserSession {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.browser.close();
         }));
+    }
+
+    /// `Some(status)` once the browser process is gone.
+    pub fn browser_exit(&self) -> Option<String> {
+        self.browser.exit_status().map(|_| self.browser.death_report())
     }
 
     /// The launched executable (browser binary or `lightpanda`).

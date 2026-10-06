@@ -44,6 +44,9 @@ fn main() -> ExitCode {
 /// (server, detached `start`, or a client call against a warm browser).
 fn run(parsed: &protocol::ParsedArgs, output: &mut dyn Write) -> ExitCode {
     let config = &parsed.config;
+    if let Some(local) = &parsed.local {
+        return protocol::run_local(local, config, output);
+    }
     #[cfg(unix)]
     {
         use browser_tool::session;

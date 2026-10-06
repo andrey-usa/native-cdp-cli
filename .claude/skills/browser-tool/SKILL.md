@@ -1,88 +1,135 @@
 ---
 name: browser-tool
-description: Drive a real headless Chrome from the shell with browser-tool (native CDP, no Node) — browse, read pages via a compact accessibility snapshot, click/fill by ref, screenshot. Use for any web browsing, scraping or UI check instead of writing Playwright/Puppeteer/Python wrapper scripts.
+description: Drive a real headless Chrome from the shell with browser-tool — one command per step against a warm session. Read pages as a compact accessibility tree with [ref=N], then click/fill/select/press by ref, wait, screenshot, handle tabs, iframes and dialogs. Use for web browsing, scraping, form filling and UI checks instead of writing Playwright/Puppeteer/Python scripts.
 ---
 
 # browser-tool
 
-One Rust binary that speaks the Chrome DevTools Protocol. Use it **directly
-from the shell, one command per step** — no wrapper scripts.
+A single native binary that drives Chrome over the DevTools Protocol. Use it
+**directly from the shell, one command per step**. Don't write wrapper scripts.
 
-## The loop
+## Setup (once)
 
 ```bash
-B="browser-tool --session work"        # any name; one warm browser per name
-
-$B start                               # once: detached server + headless Chrome
-$B goto --url https://example.com
-$B ax                                  # look: compact a11y snapshot with refs
-$B click --ref 12                      # act on a ref from the last `ax`
-$B fill --ref 31 --value "hello"
-$B ax                                  # look again to verify
-$B quit                                # done: browser + server exit
+browser-tool --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
 ```
 
-Every command prints exactly one JSON object and exits 0 on `"ok": true`,
-1 otherwise (`"error"` says why). The browser, tabs, cookies and page state
-persist between commands of the same session. An idle session shuts itself
-down after 30 min (`--idle-timeout-s` on `start`; 0 = never).
+It finds Chrome/Chromium on its own (system install, or Playwright/Puppeteer
+caches). Otherwise pass `--chromium <path>` to `start`, or set `$CHROME_BIN`.
 
-Why sessions: each shell call is a separate process, so a stdin pipe to
-`serve` can't survive between tool calls. `--session` puts the warm browser
-behind a Unix socket instead; that's what removes the need for wrappers.
+## The loop: start, look, act, look again
 
-## `ax` — read the page
-
-```json
-{"ok":true,"result":[
-  {"ref":3,"role":"RootWebArea","name":"Example Domain"},
-  {"ref":7,"role":"heading","name":"Example Domain"},
-  {"ref":9,"role":"StaticText","name":"This domain is for use in illustrative examples…"},
-  {"ref":12,"role":"link","name":"More information..."}]}
+```bash
+browser-tool -s work start                    # once: warm headless browser named "work"
+browser-tool -s work goto https://example.com
+browser-tool -s work --raw ax                 # look: page as a tree with [ref=N]
+browser-tool -s work click 12                 # act on a ref from the last ax
+browser-tool -s work fill 31 "hello world"
+browser-tool -s work press Enter
+browser-tool -s work --raw ax                 # look again to verify
+browser-tool -s work quit                     # done
 ```
 
-- Interactive nodes (buttons, links, textboxes, checkboxes, options, …) are
-  always listed; other nodes only when they carry text. Wrapper divs and text
-  that repeats its parent's label are dropped. Textboxes show `value`.
-- `ref` is valid until the page navigates or re-renders that node. After a
-  `goto` or a click that changes the page, take a fresh `ax`.
-- `ax --all` returns every node (debugging only — much larger).
-- Prefer `ax` over screenshots for structure, and over ad-hoc
-  `eval("document.querySelectorAll(...)")` for discovering elements.
+- Every command prints one JSON line: `{"ok":true,"result":…}` or
+  `{"ok":false,"error":"…"}` (exit code 1). Add `--raw` to print only the
+  result. Strings are printed as plain text, which is best for `ax` and `eval`.
+- Actions return `{tab, tabs, url, title}`, so you can see where you ended up.
+- The browser, its tabs and its cookies persist between commands of the same
+  session. `-s <name>` is short for `--session <name>`. `$BROWSER_TOOL_SESSION`
+  sets a default session. An idle session shuts down after 30 min.
 
-## Commands
+## Reading a page: `ax`
 
-| command | args | result |
-|---|---|---|
-| `start` | — | `{session, socket, log, pid}` |
-| `goto` | `--url <u>` `[--wait load\|domcontentloaded\|commit]` | `{tab, tabs, url}` |
-| `ax` | `[--all]` `[--max-depth n]` | `[{ref, role, name, value?}]` |
-| `click` | `--ref n` or `--selector <css>` | `{tab, tabs, url}` |
-| `fill` | (`--ref n` or `--selector <css>`) `--value <text>` | `{tab, tabs, url}` |
-| `text` | `--selector <css>` | `string \| null` |
-| `eval` | `--expression "<js>"` (arrow fns are called) | JSON value |
-| `title` / `url` | — | string / `{tab, tabs, url}` |
-| `screenshot` | `[--path f.png]` `[--full-page]` | `{path, bytes}` |
-| `tab-new` / `tab-list` / `tab-select --index n` / `tab-close [--index n]` | | tab inventory |
-| `quit` | — | `{bye: true}` |
+```text
+page "Checkout — Acme" http://shop.test/checkout
+- banner:
+  - link "Cart 2" [ref=9] url=/cart
+- main:
+  - heading "Checkout" [level=1]
+  - textbox "Full name" [ref=21]
+  - combobox "Country" [ref=22] value="Select…" options: "Canada", "Mexico", …
+  - group "Shipping speed":
+    - radio "Standard (5–8 days)" [ref=24]
+    - radio "Express (1–2 days)" [checked, ref=25]
+  - Iframe "Card payment":
+    - document "Card details":
+      - textbox "Card number" [ref=41]
+  - button "Place order" [ref=30]
+```
 
-## Tips
+- `[ref=N]` marks things you can act on. Pass the number straight to
+  `click`/`fill`/`select`/…; `@12`, `e12` and `ref=12` also work.
+- Nesting shows what belongs together, for example which "Add to cart" button
+  sits in which product. Text inside iframes and open shadow DOM is included.
+- Content inside collapsed or hidden parts (closed `<details>`, menus that
+  open on hover, inactive tabs) is **not** in the tree until you open it:
+  click the summary or toggle, or `hover` the menu, then run `ax` again.
+- Refs go stale when the page navigates or re-renders. Take a fresh `ax`
+  before acting on an old one.
+- Big page? Scope it with `ax --selector "#results"` or `ax 57` (a ref), and
+  use `--limit <lines>` (default 2000).
+- To extract many items, use one `eval` that returns JSON:
+  `browser-tool -s work --raw eval "() => [...document.querySelectorAll('.item')].map(e => e.innerText)"`
 
-- Batch several reads into one `eval` when `ax` doesn't carry what you need:
-  `$B eval --expression "() => [...document.querySelectorAll('h2')].map(h => h.textContent)"`.
-- JS-heavy SPA: `goto --wait commit`, then poll with `ax` until content appears.
-- `click`/`fill` with `--selector` wait (up to `--timeout-ms`, default 35 s)
-  for the element to appear, so no polling loops for late-rendering content.
-- Clicks are real (trusted) mouse events at the element's centre. If the
-  element has no visible box or is covered, the tool falls back to
-  DOM-dispatched events instead of clicking whatever covers it.
-- `$BROWSER_TOOL_SESSION=work` lets you drop `--session work` from each call.
-- Programs (not agents) can still hold a pipe open:
-  `browser-tool serve` reads one JSON command per stdin line, e.g.
-  `{"id":1,"op":"goto","url":"https://example.com"}`; the socket speaks the
-  same protocol.
+## Acting
 
-## Engines
+| command | what it does |
+|---|---|
+| `goto <url> [--wait load\|domcontentloaded\|commit]` | navigate (`example.com` gets `https://`) |
+| `click <ref>` / `--selector <css>` / `--text "<visible text>"` | real mouse click; waits for the element and for any page load it triggers |
+| `fill <ref> "<value>"` | set an input/textarea value (replaces existing text) |
+| `type "<text>" [--ref N]` | type key by key (autocomplete, key listeners) |
+| `press <key> [--ref N]` | `Enter`, `Tab`, `Escape`, `ArrowDown`, `Control+a`, … |
+| `select <ref> "<option>"` | pick a `<select>` option by label or value |
+| `hover <ref>` | move the mouse over an element (hover menus) |
+| `scroll [--by 800 \| --to bottom] [<ref>]` | scroll the page (infinite lists load more) or bring a ref into view |
+| `upload <ref> <file>…` | set an `<input type=file>` |
+| `wait --text "Saved" \| --selector <css> \| --url <part> \| --gone <css> \| --js "<expr>" \| --ms 500` | wait for a condition (default up to 5 s) |
+| `eval "<js>"` | run JavaScript in the page; arrow functions are called; result printed as JSON |
+| `back` / `forward` / `reload` | history |
+| `screenshot [file.png] [--full-page]` | PNG of the viewport or the whole page |
+| `tab-new [url]`, `tab-list`, `tab-select <i>`, `tab-close [<i>]` | tabs |
+| `dialog --accept\|--dismiss [--prompt-text t]` | how future `alert`/`confirm`/`prompt` dialogs are answered |
 
-`--engine chrome` (default; Chrome/Chromium/Edge/Brave via `--chromium <path>`)
-or `--engine lightpanda` (single tab; binary via `$LIGHTPANDA_BIN` or PATH).
+Element commands wait up to 5 s for the element to appear. Pass
+`--timeout-ms <ms>` to wait longer.
+
+## What the tool handles for you
+
+- **New tabs:** a link with `target=_blank` or `window.open` opens a tab
+  that the session adopts and switches to. The response says
+  `"new_tabs":[1]`. Use `tab-select 0` to go back.
+- **Dialogs:** `alert`, `confirm` and `prompt` are accepted and reported in the
+  response as `"dialogs":[{type, message, accepted}]`. Run `dialog --dismiss`
+  first if you want "Cancel".
+- **Navigation:** a click that loads a new page returns after that page is
+  ready. The next command never reads the old page. A page that never
+  finishes loading is used as it is after about 5 s, and the response says
+  `"loading": true`: `wait --text …` for what you need.
+- **Covered elements:** if a toast or overlay covers the target, the click
+  waits up to 3 s. If it is still covered, a DOM click is sent instead and the
+  response says `synthetic_click: "element is covered by …"`. A cookie banner
+  usually needs its own click first. Styled checkboxes and radios are
+  clicked through their label automatically.
+- **Iframes:** refs work inside any iframe, cross-origin included.
+  `--selector` and `--text` only search the top page (and its open shadow
+  roots), so act on iframe content by ref.
+- **Files:** `upload ./doc.txt` and `screenshot shot.png` use paths relative
+  to your current directory.
+
+## When something fails
+
+| error | do this |
+|---|---|
+| `no element matches selector … / no element with text …` | `ax` to see what is really there; act by ref |
+| `ref N not found (stale …)` | take a fresh `ax` |
+| `timed out … waiting for load` | the page has a slow resource: `goto <url> --wait domcontentloaded`, then `wait --text …` |
+| `select: element is … not a <select>` | custom dropdown: `click` it, `ax`, then click the option by ref |
+| `no browser-tool session at …` | run `browser-tool -s <name> start` first |
+| text you expect is missing from `ax` | it may be collapsed (`<details>`, accordion, tab) or appear after scrolling: expand it or `scroll`, then `ax` again |
+
+## More
+
+`browser-tool help <command>` prints usage for one command. `browser-tool skill`
+prints this guide for the installed version, and `browser-tool install-skill`
+copies it to `./.agents/skills` (`--claude` for `./.claude/skills`).

@@ -181,6 +181,119 @@ pub fn launch_chrome(
     })
 }
 
+/// A browser launched with `--remote-debugging-pipe`: CDP runs over two
+/// anonymous pipes (Chrome reads commands on fd 3, writes replies on fd 4;
+/// messages are NUL-terminated JSON), the transport Playwright uses.
+///
+/// Compared with `--remote-debugging-port`: no DevTools HTTP/WebSocket server
+/// to start and no handshake, and — more important for agents on shared
+/// machines — no TCP port any other local process could attach to.
+#[cfg(unix)]
+pub struct LaunchedPipe {
+    pub child: Child,
+    pub profile_dir: tempfile::TempDir,
+    /// Our end of Chrome's fd 4 (replies and events).
+    pub from_browser: std::os::fd::OwnedFd,
+    /// Our end of Chrome's fd 3 (commands).
+    pub to_browser: std::os::fd::OwnedFd,
+    /// Chrome's stderr, drained for its lifetime; the bounded tail explains
+    /// a browser that dies at launch or mid-session.
+    pub stderr: StderrTail,
+}
+
+/// Bounded tail of a browser's stderr, kept for error messages.
+#[derive(Clone)]
+pub struct StderrTail(Arc<Mutex<Vec<u8>>>);
+
+impl StderrTail {
+    /// The last lines of stderr, minus known harmless noise (DBus, fonts).
+    pub fn tail(&self) -> String {
+        let b = self.0.lock().map(|b| b.clone()).unwrap_or_default();
+        let text = String::from_utf8_lossy(&b);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.is_empty() && !l.contains("dbus") && !l.contains("Fontconfig"))
+            .collect();
+        let joined = lines[lines.len().saturating_sub(6)..].join("\n");
+        let start = joined.len().saturating_sub(800);
+        joined[joined.ceil_char_boundary(start)..].to_string()
+    }
+}
+
+#[cfg(unix)]
+pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) -> Result<LaunchedPipe> {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+
+    extern "C" {
+        fn dup2(old: i32, new: i32) -> i32;
+        fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+    }
+    // Linux and macOS value; the temporaries close at exec, only the
+    // dup2'd 3 and 4 (which never carry O_CLOEXEC) reach Chrome.
+    const F_DUPFD_CLOEXEC: i32 = if cfg!(target_os = "linux") { 1030 } else { 67 };
+
+    let profile_dir = tempfile::Builder::new()
+        .prefix("cdp-cli-profile-")
+        .tempdir()
+        .context("create chrome profile dir")?;
+    // Chrome reads commands from fd 3 and writes to fd 4.
+    let (cmd_read, cmd_write) = std::io::pipe().context("pipe for CDP commands")?;
+    let (reply_read, reply_write) = std::io::pipe().context("pipe for CDP replies")?;
+    let child_in = cmd_read.as_raw_fd();
+    let child_out = reply_write.as_raw_fd();
+
+    let mut cmd = Command::new(exe);
+    if headless {
+        cmd.arg("--headless=new");
+    }
+    cmd.arg("--remote-debugging-pipe")
+        .arg(format!("--user-data-dir={}", profile_dir.path().display()))
+        .args(chrome_flags)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        // Drained by a thread (and copied to $BT_CHROME_LOG): the tail goes
+        // into the error when the browser dies.
+        .stderr(Stdio::piped());
+    // SAFETY: only async-signal-safe calls (fcntl/dup2) between fork and exec.
+    // Move both ends above fd 10 first so dup2 onto 3/4 can't clobber one
+    // with the other; dup2'd fds don't inherit O_CLOEXEC, so 3 and 4 survive
+    // exec while every other pipe end (CLOEXEC from std::io::pipe) closes.
+    unsafe {
+        cmd.pre_exec(move || {
+            let a = fcntl(child_in, F_DUPFD_CLOEXEC, 10);
+            let b = fcntl(child_out, F_DUPFD_CLOEXEC, 10);
+            if a < 0 || b < 0 || dup2(a, 3) < 0 || dup2(b, 4) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().with_context(|| format!("spawn {exe} --remote-debugging-pipe"))?;
+    // The child's ends live on in Chrome; close ours so EOF propagates.
+    drop(cmd_read);
+    drop(reply_write);
+    let stderr = child
+        .stderr
+        .take()
+        .map(|e| StderrTail(Capture::start(e).buf))
+        .unwrap_or_else(|| StderrTail(Arc::default()));
+    Ok(LaunchedPipe {
+        child,
+        profile_dir,
+        from_browser: OwnedFd::from(reply_read),
+        to_browser: OwnedFd::from(cmd_write),
+        stderr,
+    })
+}
+
+/// `BT_CHROME_LOG=<file>`: append the browser's own stderr there (crash
+/// reasons, sandbox errors) for diagnosing a browser that died mid-session.
+fn chrome_log() -> Option<std::fs::File> {
+    let path = std::env::var_os("BT_CHROME_LOG")?;
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
 /// The captured stderr line carrying the browser DevTools WebSocket URL, if any.
 fn extract_devtools_url(line: &str) -> Option<String> {
     let start = line.find(DEVTOOLS_LISTENING)?;
@@ -210,7 +323,11 @@ impl Capture {
             thread::spawn(move || {
                 let reader = std::io::BufReader::new(stderr).lines();
                 let mut announced = false;
+                let mut log = chrome_log();
                 for line in reader.map_while(Result::ok) {
+                    if let Some(f) = log.as_mut() {
+                        let _ = writeln!(f, "{line}");
+                    }
                     if !announced {
                         if let Some(u) = extract_devtools_url(&line) {
                             announced = true;

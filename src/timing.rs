@@ -37,3 +37,11 @@ pub fn report() {
         .collect();
     eprintln!("BT_TIMINGS {}", serde_json::Value::Object(map));
 }
+
+/// Diagnostic line on stderr, only with `BT_VERBOSE` set (or `BT_TIMINGS`):
+/// agents read stderr too, so routine launch chatter costs them tokens.
+pub fn log(line: &str) {
+    if std::env::var_os("BT_VERBOSE").is_some() || enabled() {
+        eprintln!("{line}");
+    }
+}

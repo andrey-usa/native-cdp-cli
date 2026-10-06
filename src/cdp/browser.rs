@@ -7,7 +7,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use std::sync::Arc;
+
 use super::client::CdpClient;
+use super::events::{self, DialogPolicy, Shared};
 use super::page::Page;
 use super::transport::{self, LaunchedChrome};
 
@@ -21,6 +24,8 @@ pub struct LaunchOptions {
     /// Pre-picked remote debugging port (used by engines whose launcher
     /// needs to know it, e.g. the Lightpanda shim).
     pub debugging_port: Option<u16>,
+    /// CDP over `--remote-debugging-pipe` instead of a WebSocket port.
+    pub pipe: bool,
 }
 
 /// A launched browser: one CDP client on the browser target, plus the child
@@ -36,6 +41,10 @@ pub struct Browser {
     /// `None` for engines that need no profile (Lightpanda).
     _profile_dir: Option<tempfile::TempDir>,
     ws_url: String,
+    /// Chrome's stderr tail (pipe launches), for "why did it die" errors.
+    stderr: Option<transport::StderrTail>,
+    /// Dialog log, popups and per-tab navigation state (see `events`).
+    shared: Arc<Shared>,
 }
 
 impl Browser {
@@ -112,10 +121,12 @@ impl Browser {
                 );
             }
         };
-        eprintln!("[browser] lightpanda serve on 127.0.0.1:{port} -> {ws_url}");
+        crate::timing::log(&format!("[browser] lightpanda serve on 127.0.0.1:{port} -> {ws_url}"));
         let client = handle
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect to lightpanda")?;
+        let shared = Arc::new(Shared::default());
+        events::spawn(handle, &client, Arc::clone(&shared));
         Ok(Self {
             handle: handle.clone(),
             client,
@@ -123,12 +134,28 @@ impl Browser {
             kill_group: cfg!(unix),
             _profile_dir: None,
             ws_url,
+            stderr: None,
+            shared,
         })
     }
 
     /// Launch the engine and connect the browser-level CDP session.
     pub fn launch(handle: &tokio::runtime::Handle, opts: &LaunchOptions) -> Result<Self> {
         let started = std::time::Instant::now();
+        #[cfg(unix)]
+        if opts.pipe && opts.debugging_port.is_none() {
+            let launched = transport::launch_chrome_pipe(&opts.exe, opts.headless, &opts.chrome_flags)
+                .context("launch chrome")?;
+            crate::timing::record("spawn", started);
+            let client = {
+                let _guard = handle.enter();
+                handle.block_on(CdpClient::connect_pipe(launched.from_browser, launched.to_browser))
+            }
+            .context("CDP pipe connect")?;
+            let mut browser = Self::finish(handle, client, launched.child, Some(launched.profile_dir), "pipe".into());
+            browser.stderr = Some(launched.stderr);
+            return Ok(browser);
+        }
         let LaunchedChrome {
             child,
             profile_dir,
@@ -142,14 +169,39 @@ impl Browser {
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect")?;
         crate::timing::record("ws_connect", connect_started);
-        Ok(Self {
+        Ok(Self::finish(handle, client, child, Some(profile_dir), ws_url))
+    }
+
+    fn finish(
+        handle: &tokio::runtime::Handle,
+        client: CdpClient,
+        child: Child,
+        profile_dir: Option<tempfile::TempDir>,
+        ws_url: String,
+    ) -> Self {
+        let shared = Arc::new(Shared::default());
+        events::spawn(handle, &client, Arc::clone(&shared));
+        // Popups (`target=_blank`, `window.open`) announce themselves as
+        // `Target.targetCreated` with an `openerId`; the session adopts them
+        // as tabs. One round trip, before any page exists.
+        if std::env::var_os("BT_NO_DISCOVER").is_none() {
+            let _ = handle.block_on(client.send(
+                "Target.setDiscoverTargets",
+                json!({ "discover": true }),
+                None,
+                CMD_TIMEOUT,
+            ));
+        }
+        Self {
             handle: handle.clone(),
             client,
             child: Mutex::new(Some(child)),
             kill_group: false,
-            _profile_dir: Some(profile_dir),
+            _profile_dir: profile_dir,
             ws_url,
-        })
+            shared,
+            stderr: None,
+        }
     }
 
     fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
@@ -213,8 +265,83 @@ impl Browser {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("attachToTarget: no sessionId"))?
                 .to_string();
-            let page = Page::new(self.handle.clone(), self.client.clone(), session_id, target_id);
+            self.shared.register(&session_id, &target_id);
+            let page = Page::new(
+                self.handle.clone(),
+                self.client.clone(),
+                session_id,
+                target_id,
+                Arc::clone(&self.shared),
+            );
             page.enable().await?;
+            Ok(page)
+        })
+    }
+
+    /// The watcher's shared state (dialog log, popups, navigation).
+    pub fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
+    /// How dialogs are answered from now on.
+    pub fn set_dialog_policy(&self, policy: DialogPolicy) {
+        *self.shared.policy.lock().unwrap() = policy;
+    }
+
+    /// Attach to a page target the browser opened on its own (a popup) and
+    /// enable it like a tab we created.
+    pub fn attach_page(&self, target_id: &str) -> Result<Page> {
+        self.block_on(async {
+            let session = self
+                .client
+                .send(
+                    "Target.attachToTarget",
+                    json!({ "targetId": target_id, "flatten": true }),
+                    None,
+                    CMD_TIMEOUT,
+                )
+                .await
+                .context("Target.attachToTarget")?;
+            let session_id = session
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("attachToTarget: no sessionId"))?
+                .to_string();
+            self.shared.register(&session_id, target_id);
+            let page = Page::new(
+                self.handle.clone(),
+                self.client.clone(),
+                session_id.clone(),
+                target_id.to_string(),
+                Arc::clone(&self.shared),
+            );
+            page.enable().await?;
+            // The popup's navigation started before we attached: read where
+            // it stands so the next op waits for it instead of reading the
+            // initial about:blank.
+            let target_url = self
+                .client
+                .send("Target.getTargetInfo", json!({ "targetId": target_id }), None, CMD_TIMEOUT)
+                .await
+                .ok()
+                .and_then(|i| i.pointer("/targetInfo/url").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            let doc = self
+                .client
+                .send(
+                    "Runtime.evaluate",
+                    json!({ "expression": "[document.readyState, location.href]", "returnByValue": true }),
+                    Some(&session_id),
+                    CMD_TIMEOUT,
+                )
+                .await
+                .ok()
+                .and_then(|r| r.pointer("/result/value").cloned())
+                .unwrap_or_default();
+            let ready = doc.get(0).and_then(Value::as_str).unwrap_or("complete");
+            let href = doc.get(1).and_then(Value::as_str).unwrap_or("");
+            let pending = href == "about:blank" && !target_url.is_empty() && target_url != "about:blank";
+            self.shared.seed_nav(&session_id, ready, pending);
             Ok(page)
         })
     }
@@ -251,7 +378,14 @@ impl Browser {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("attachToTarget: no sessionId"))?
                 .to_string();
-            let page = Page::new(self.handle.clone(), self.client.clone(), session_id, target_id);
+            self.shared.register(&session_id, &target_id);
+            let page = Page::new(
+                self.handle.clone(),
+                self.client.clone(),
+                session_id,
+                target_id,
+                Arc::clone(&self.shared),
+            );
             page.enable().await?;
             Ok(page)
         })
@@ -305,6 +439,26 @@ impl Browser {
                 .await?;
             Ok(())
         })
+    }
+
+    /// If the browser process has exited (crashed, killed), how.
+    /// Exit status plus the browser's last stderr lines, for errors when
+    /// the browser died (at launch or mid-session).
+    pub fn death_report(&self) -> String {
+        let status = self.exit_status().unwrap_or_else(|| "no exit status yet".into());
+        match self.stderr.as_ref().map(|s| s.tail()).filter(|t| !t.is_empty()) {
+            Some(tail) => format!("exited: {status}; its stderr ends with:\n{tail}"),
+            None => format!("exited: {status}"),
+        }
+    }
+
+    pub fn exit_status(&self) -> Option<String> {
+        let mut slot = self.child.lock().ok()?;
+        let child = slot.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => Some(status.to_string()),
+            _ => None,
+        }
     }
 
     /// Shut the browser down: kill it and reap it.

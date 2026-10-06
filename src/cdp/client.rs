@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -35,6 +35,18 @@ struct Inner {
     /// closing the websocket.
     writer: Mutex<Option<mpsc::UnboundedSender<String>>>,
     events: broadcast::Sender<Value>,
+    /// Set once the transport is gone (browser exited, pipe/socket closed):
+    /// `send` then fails at once instead of waiting out its timeout.
+    closed: Arc<AtomicBool>,
+}
+
+/// Mark the connection closed and fail every request still waiting.
+fn close_all(closed: &AtomicBool, pending: &Mutex<HashMap<u64, Responder>>) {
+    closed.store(true, Ordering::SeqCst);
+    let mut pending = pending.lock().unwrap();
+    for (_, responder) in pending.drain() {
+        let _ = responder.send(Err("CDP connection closed".to_string()));
+    }
 }
 
 impl Clone for CdpClient {
@@ -64,6 +76,8 @@ impl CdpClient {
             Arc::new(Mutex::new(HashMap::new()));
         let pending_pump = Arc::clone(&pending);
         let event_tx_pump = event_tx.clone();
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_pump = Arc::clone(&closed);
 
         tokio::spawn(async move {
             loop {
@@ -93,10 +107,7 @@ impl CdpClient {
                 }
             }
             // Connection lost: fail everything still pending.
-            let mut pending = pending_pump.lock().unwrap();
-            for (_, responder) in pending.drain() {
-                let _ = responder.send(Err("CDP connection closed".to_string()));
-            }
+            close_all(&closed_pump, &pending_pump);
         });
 
         Ok(Self {
@@ -105,6 +116,75 @@ impl CdpClient {
                 pending,
                 writer: Mutex::new(Some(tx)),
                 events: event_tx,
+                closed,
+            }),
+        })
+    }
+
+    /// Connect over `--remote-debugging-pipe` fds: NUL-terminated JSON
+    /// messages, one writer task and one reader task.
+    #[cfg(unix)]
+    pub async fn connect_pipe(
+        from_browser: std::os::fd::OwnedFd,
+        to_browser: std::os::fd::OwnedFd,
+    ) -> Result<Self> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut reader = tokio::net::unix::pipe::Receiver::from_owned_fd(from_browser)
+            .context("CDP pipe (browser -> us)")?;
+        let mut writer = tokio::net::unix::pipe::Sender::from_owned_fd(to_browser)
+            .context("CDP pipe (us -> browser)")?;
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (event_tx, _) = broadcast::channel::<Value>(512);
+        let pending: Arc<Mutex<HashMap<u64, Responder>>> = Arc::new(Mutex::new(HashMap::new()));
+        let closed = Arc::new(AtomicBool::new(false));
+
+        let (closed_w, pending_w) = (Arc::clone(&closed), Arc::clone(&pending));
+        tokio::spawn(async move {
+            while let Some(text) = rx.recv().await {
+                let mut bytes = text.into_bytes();
+                bytes.push(0);
+                if writer.write_all(&bytes).await.is_err() {
+                    // Chrome is gone (EPIPE): the request just queued would
+                    // otherwise wait out its whole timeout.
+                    close_all(&closed_w, &pending_w);
+                    break;
+                }
+            }
+            // Dropping the writer closes Chrome's command pipe: it exits.
+        });
+        let pending_pump = Arc::clone(&pending);
+        let event_tx_pump = event_tx.clone();
+        let closed_pump = Arc::clone(&closed);
+        tokio::spawn(async move {
+            let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+            let mut chunk = vec![0u8; 256 * 1024];
+            let mut scanned = 0;
+            loop {
+                match reader.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(pos) = buf[scanned..].iter().position(|b| *b == 0) {
+                            let end = scanned + pos;
+                            if let Ok(text) = std::str::from_utf8(&buf[..end]) {
+                                dispatch(text, &pending_pump, &event_tx_pump);
+                            }
+                            buf.drain(..=end);
+                            scanned = 0;
+                        }
+                        scanned = buf.len();
+                    }
+                }
+            }
+            close_all(&closed_pump, &pending_pump);
+        });
+        Ok(Self {
+            inner: Arc::new(Inner {
+                next_id: AtomicU64::new(1),
+                pending,
+                writer: Mutex::new(Some(tx)),
+                events: event_tx,
+                closed,
             }),
         })
     }
@@ -117,9 +197,19 @@ impl CdpClient {
         session_id: Option<&str>,
         timeout: Duration,
     ) -> Result<Value> {
+        trace(method, &params);
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
+        if self.inner.closed.load(Ordering::SeqCst) {
+            anyhow::bail!("CDP connection closed during {method}");
+        }
         self.inner.pending.lock().unwrap().insert(id, tx);
+        // The transport may have closed (and drained `pending`) between the
+        // check and the insert.
+        if self.inner.closed.load(Ordering::SeqCst) {
+            self.inner.pending.lock().unwrap().remove(&id);
+            anyhow::bail!("CDP connection closed during {method}");
+        }
 
         let mut msg = serde_json::json!({
             "id": id,
@@ -179,6 +269,58 @@ impl CdpClient {
     /// After this, `send` fails fast.
     pub fn shutdown(&self) {
         self.inner.writer.lock().unwrap().take();
+    }
+}
+
+/// `BT_CDP_TRACE=<file>`: append every CDP command this process sends as one
+/// JSON line `{"method", "params"}` with values reduced to their shape
+/// (short strings kept so enum values can be checked). CI validates the
+/// trace against the running browser's own `/json/protocol`
+/// (`tools/cdp_check.py`), so a renamed method or parameter in a new Chrome
+/// fails a test run instead of an agent's session.
+fn trace(method: &str, params: &Value) {
+    use std::io::Write as _;
+    static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = std::env::var_os("BT_CDP_TRACE")?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    });
+    let Some(file) = file else { return };
+    // One write() per line: several browser-tool processes append to the
+    // same file in parallel, and O_APPEND keeps single writes whole.
+    let mut line = serde_json::json!({ "method": method, "params": shape(params, 0) }).to_string();
+    line.push('\n');
+    if let Ok(mut f) = file.lock() {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// A value's shape for the trace: objects/arrays recursed (bounded), short
+/// strings kept verbatim (enum candidates), everything else as a type tag.
+fn shape(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::Object(map) if depth < 4 => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), shape(v, depth + 1)))
+                .collect(),
+        ),
+        Value::Array(items) if depth < 4 => {
+            Value::Array(items.first().map(|v| shape(v, depth + 1)).into_iter().collect())
+        }
+        Value::String(s) if s.len() <= 40 && !s.contains(char::is_whitespace) => {
+            Value::String(s.clone())
+        }
+        Value::String(_) => Value::String("<string>".into()),
+        Value::Number(_) => Value::String("<number>".into()),
+        Value::Bool(_) => Value::String("<boolean>".into()),
+        Value::Null => Value::Null,
+        Value::Object(_) => Value::String("<object>".into()),
+        Value::Array(_) => Value::String("<array>".into()),
     }
 }
 

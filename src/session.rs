@@ -55,15 +55,8 @@ fn now_s() -> u64 {
         .unwrap_or(0)
 }
 
-fn print_json(output: &mut dyn Write, value: &Value, pretty: bool) {
-    let text = if pretty {
-        serde_json::to_string_pretty(value)
-    } else {
-        serde_json::to_string(value)
-    }
-    .unwrap_or_else(|_| value.to_string());
-    let _ = writeln!(output, "{text}");
-    let _ = output.flush();
+fn print_json(output: &mut dyn Write, value: &Value, config: &SessionConfig) {
+    protocol::print_cli_response(output, value, config);
 }
 
 /// Session server: launch the browser, then serve the line protocol on the
@@ -182,7 +175,7 @@ pub fn client(
             print_json(
                 output,
                 &json!({ "id": null, "ok": false, "error": error }),
-                config.pretty,
+                config,
             );
             return ExitCode::from(1);
         }
@@ -193,18 +186,19 @@ pub fn client(
             print_json(
                 output,
                 &json!({ "id": null, "ok": false, "error": format!("encode command: {e}") }),
-                config.pretty,
+                config,
             );
             return ExitCode::from(1);
         }
     };
     request["id"] = json!(1);
+    localize_request(&mut request, config);
     let mut writer = &stream;
     if writeln!(writer, "{request}").and_then(|_| writer.flush()).is_err() {
         print_json(
             output,
             &json!({ "id": null, "ok": false, "error": "session closed the connection" }),
-            config.pretty,
+            config,
         );
         return ExitCode::from(1);
     }
@@ -221,20 +215,64 @@ pub fn client(
             "error": "session ended without a response (see its log next to the socket)",
         }),
     };
-    let ok = response.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    print_json(output, &response, config.pretty);
-    if ok {
+    if matches!(command, Command::Quit {}) {
+        // Return only once the server has let go of the socket, so a `start`
+        // right after `quit` gets a fresh session, not the dying one.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    if protocol::print_cli_response(output, &response, config) {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
     }
 }
 
-fn fail(output: &mut dyn Write, pretty: bool, error: String) -> ExitCode {
+/// The session server runs in another directory (wherever `start` ran), so
+/// file paths a client passes are made absolute in the client's own working
+/// directory first: `upload ./doc.txt` and `screenshot shot.png` mean the
+/// caller's files. A global `--timeout-ms` given to a client call applies to
+/// that op (the server's own default was fixed at `start`).
+fn localize_request(request: &mut Value, config: &SessionConfig) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let absolute = |p: &str| -> String {
+        let path = std::path::Path::new(p);
+        if path.is_absolute() { p.to_string() } else { cwd.join(path).display().to_string() }
+    };
+    match request.get("op").and_then(Value::as_str) {
+        Some("upload") => {
+            if let Some(files) = request.get_mut("files").and_then(Value::as_array_mut) {
+                for f in files.iter_mut() {
+                    if let Some(p) = f.as_str() {
+                        *f = json!(absolute(p));
+                    }
+                }
+            }
+        }
+        Some("screenshot") => {
+            let path = match request.get("path").and_then(Value::as_str) {
+                Some(p) => absolute(p),
+                None => absolute(&format!("shot-{}.png", SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0))),
+            };
+            request["path"] = json!(path);
+        }
+        _ => {}
+    }
+    if request.get("timeout_ms").is_none() && config.timeout_ms != crate::protocol::DEFAULT_TIMEOUT_MS {
+        request["timeout_ms"] = json!(config.timeout_ms);
+    }
+}
+
+fn fail(output: &mut dyn Write, config: &SessionConfig, error: String) -> ExitCode {
     print_json(
         output,
         &json!({ "id": null, "ok": false, "error": error }),
-        pretty,
+        config,
     );
     ExitCode::from(1)
 }
@@ -252,17 +290,17 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
             &json!({ "id": null, "ok": true, "result": {
                 "session": name, "socket": socket_str, "log": log_str, "already_running": true,
             }}),
-            config.pretty,
+            config,
         );
         return ExitCode::SUCCESS;
     }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
-        Err(e) => return fail(output, config.pretty, format!("locate browser-tool binary: {e}")),
+        Err(e) => return fail(output, config, format!("locate browser-tool binary: {e}")),
     };
     let log = match std::fs::File::create(&log_path) {
         Ok(file) => file,
-        Err(e) => return fail(output, config.pretty, format!("create {}: {e}", log_path.display())),
+        Err(e) => return fail(output, config, format!("create {}: {e}", log_path.display())),
     };
 
     let mut cmd = std::process::Command::new(exe);
@@ -280,6 +318,9 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
     if let Some(chromium) = &config.chromium {
         cmd.arg("--chromium").arg(chromium);
     }
+    if let Some(transport) = &config.transport {
+        cmd.arg("--transport").arg(transport);
+    }
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -289,7 +330,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
         .process_group(0);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return fail(output, config.pretty, format!("spawn session server: {e}")),
+        Err(e) => return fail(output, config, format!("spawn session server: {e}")),
     };
 
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -300,7 +341,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
                 &json!({ "id": null, "ok": true, "result": {
                     "session": name, "socket": socket_str, "log": log_str, "pid": child.id(),
                 }}),
-                config.pretty,
+                config,
             );
             return ExitCode::SUCCESS;
         }
@@ -317,7 +358,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
                 .join("\n");
             return fail(
                 output,
-                config.pretty,
+                config,
                 format!("session server exited during startup ({status}):\n{tail}"),
             );
         }
@@ -326,7 +367,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
             let _ = child.wait();
             return fail(
                 output,
-                config.pretty,
+                config,
                 format!("session server did not listen within 60s; see {}", log_path.display()),
             );
         }

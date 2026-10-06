@@ -13,10 +13,13 @@
 //! `client` multiplexes JSON-RPC over the websocket, `browser` owns the
 //! browser-level connection, `page` implements the tab-level operations.
 
+pub mod ax;
 mod browser;
 mod client;
+mod events;
 mod page;
 mod transport;
 
 pub use browser::{Browser, LaunchOptions};
-pub use page::Page;
+pub use events::DialogPolicy;
+pub use page::{AxOptions, Page, Target, DEFAULT_ELEMENT_WAIT};
