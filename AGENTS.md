@@ -166,7 +166,11 @@ If something you need isn't there, add an annotation for it (see
 - Every number in README must cite the run id it came from. Regenerate the
   README table from the run's `publish.json` rather than retyping it.
 - Agent eval: judge success from the site's recorded state (`/__state`)
-  and the final answer, never from the agent's own claim. Keep the model,
+  and the final answer, never from the agent's own claim. Read each run's
+  `shell_steps` (command + output tail) before blaming a tool: the first
+  runs blamed nobody for a 503 from Gemini's own web fetch, and found that
+  Gemini CLI strips the shell environment in GitHub Actions (hence
+  `PASS_ENV` in `run.py`). Keep the model,
   prompt template, settings, Chrome and site identical across tools. Each
   tool gets the skill its own vendor ships.
 - For agents, **tokens matter more than milliseconds**. An `ax` that takes

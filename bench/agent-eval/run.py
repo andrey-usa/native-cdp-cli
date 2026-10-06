@@ -74,8 +74,17 @@ Task: {task}
 When you are done, end your reply with one line exactly in this form:
 FINAL ANSWER: <answer>"""
 
+# Gemini CLI strips the shell environment to a short allowlist when it runs
+# in GitHub Actions (GITHUB_SHA set). Pass through what a developer machine
+# would have, or the agents never see the Chrome path or the Rust toolchain.
+PASS_ENV = ["CHROME_BIN", "RUSTUP_HOME", "CARGO_HOME", "NPM_CONFIG_PREFIX",
+            "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_ARGS",
+            "PLAYWRIGHT_MCP_EXECUTABLE_PATH", "PLAYWRIGHT_MCP_SANDBOX",
+            "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "DO_NOT_TRACK", "DISABLE_TELEMETRY", "CI"]
+
 GEMINI_SETTINGS = {
-    "security": {"auth": {"selectedType": "gemini-api-key"}, "folderTrust": {"enabled": False}},
+    "security": {"auth": {"selectedType": "gemini-api-key"}, "folderTrust": {"enabled": False},
+                 "environmentVariableRedaction": {"allowed": PASS_ENV}},
     "model": {"maxSessionTurns": 40},
     "general": {"checkpointing": {"enabled": False}, "enableAutoUpdate": False,
                 "enableAutoUpdateNotification": False, "maxAttempts": 10},
