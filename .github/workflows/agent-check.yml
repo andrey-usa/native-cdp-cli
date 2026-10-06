@@ -1,0 +1,67 @@
+name: agent-check
+
+# Natural-language checks: a generic agent (Gemini CLI, free-tier key) is
+# told, in plain words, to buy something with browser-tool and its skill.
+#
+#   purchase       local Acme Supply shop: cart, coupon, checkout through a
+#                  card iframe; judged from the order the site recorded.
+#   purchase-live  Sauce Labs' public demo shop (saucedemo.com, built for
+#                  automation practice; no real payment): log in, cart,
+#                  checkout; judged from the confirmation and total.
+#                  Live internet: informational, never a gate.
+#
+# Runs on master pushes, PRs from this repo and nightly. Needs a Gemini key
+# in the `main` environment; without one it reports that and passes.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.task }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - task: purchase
+            live: false
+          - task: purchase-live
+            live: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.live }}
+    environment: main
+    env:
+      HAS_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+      MODEL: gemini-3.5-flash-lite
+    steps:
+      - uses: actions/checkout@v4
+      - name: No key
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice title=agent check::no Gemini key available to this run (fork PR or unset); skipped."
+      - uses: ./.github/actions/agent-setup
+        if: env.HAS_KEY == 'true'
+      - name: Agent run
+        if: env.HAS_KEY == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 bench/agent-eval/run.py --mode skilled --tools browser-tool --tasks "${{ matrix.task }}" \
+            --model "$MODEL" --gemini "$GEMINI_BIN" --out out --require-pass
+      - name: Result
+        if: always() && env.HAS_KEY == 'true'
+        run: |
+          python3 bench/ladder/annotate.py out/table-skilled.md "agent check ${{ matrix.task }}"
+          python3 bench/agent-eval/annotate_runs.py out/summary-skilled.json "agent check json ${{ matrix.task }}"

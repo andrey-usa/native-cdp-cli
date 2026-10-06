@@ -218,10 +218,22 @@ claim. Every run also records model requests, tokens, shell commands and
 off-tool workarounds (curl, ad-hoc scripts). Model, prompt template, Chrome
 and site are identical across tools.
 
-It needs a `GEMINI_API_KEY` repository secret (free key:
-[aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Without
-it, only the scripted baseline runs, which checks the site, the success
-checks and the harness with known-good browser-tool command plans.
+The three tools run as parallel jobs. Keys live in the `main` environment,
+one slot per tool, because Gemini's free quota is per Google Cloud project:
+`GEMINI_API_KEY` (browser-tool), `GEMINI_API_KEY_2` (agent-browser) and
+`GEMINI_API_KEY_3` (playwright-cli). An empty slot falls back to
+`GEMINI_API_KEY`. Without any key only the scripted baseline runs: it checks
+the site, the success checks and the harness with known-good browser-tool
+command plans. Runs that die on a model quota or outage are reported as
+**⚠ infra**, not counted as a tool failure.
+
+**Natural checks** ([`agent-check.yml`](.github/workflows/agent-check.yml),
+every master push, PRs and nightly): Gemini is told in plain words to buy
+something with browser-tool and its skill. Once on the local shop (a real
+check, judged from the recorded order), and once on Sauce Labs' public demo
+shop [saucedemo.com](https://www.saucedemo.com), which exists for automation
+practice and takes no real payment (informational, judged from the
+confirmation and the order total).
 
 ## Working on this repo (humans and agents)
 
