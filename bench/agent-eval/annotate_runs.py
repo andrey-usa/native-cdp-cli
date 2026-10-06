@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Publish an agent-eval summary JSON as check-run annotations.
+
+GitHub keeps at most 10 notices per step and ~3.5 KB fits per notice, so
+the per-run record is trimmed (first 12 shell commands, no model text)
+until the whole summary fits in 10 chunks.
+
+  annotate_runs.py out/gemini/summary-skilled.json "agent eval json skilled"
+"""
+import json
+import os
+import subprocess
+import sys
+
+CHUNK, MAX_NOTICES = 3500, 10
+
+
+def main() -> int:
+    path, title = sys.argv[1], sys.argv[2]
+    if not os.path.exists(path):
+        print(f"{path}: no summary (mode not run)")
+        return 0
+    doc = json.load(open(path))
+    for keep in (12, 6, 3, 0):
+        for run in doc.get("runs", []):
+            run["shell_commands"] = run.get("shell_commands", [])[:keep]
+            run.pop("text", None)
+            run.pop("tools_used", None)
+        # One value per line: annotate.py chunks on line boundaries.
+        text = json.dumps(doc, indent=0)
+        if len(text) <= CHUNK * MAX_NOTICES * 0.9:
+            break
+    tmp = path + ".annot"
+    with open(tmp, "w") as f:
+        f.write(text)
+    here = os.path.dirname(os.path.abspath(__file__))
+    annotate = os.path.join(here, "..", "ladder", "annotate.py")
+    return subprocess.call([sys.executable, annotate, tmp, title])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

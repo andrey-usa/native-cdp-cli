@@ -110,21 +110,14 @@ jobs:
           python3 bench/agent-eval/run.py --mode skilled --tools "$TOOLS" --tasks "$TASKS" \
             --model "$MODEL" --gemini "$GEMINI_BIN" --reps "$REPS" --out out/gemini | tee out-skilled.log
           python3 bench/ladder/annotate.py out/gemini/table-skilled.md "agent eval skilled"
-      - name: Summaries as annotations (json)
+      # GitHub keeps at most 10 notices per step: one step per mode, and
+      # shell command lists trimmed so a full run fits.
+      - name: Onboarding runs as annotations (json)
         if: always() && env.HAS_KEY == 'true'
-        run: |
-          for m in onboard skilled; do
-            f=out/gemini/summary-$m.json
-            [ -f "$f" ] || continue
-            python3 - "$f" > /tmp/summary-$m.json <<'EOF'
-          import json, sys
-          d = json.load(open(sys.argv[1]))
-          for r in d["runs"]:
-              r["shell_commands"] = r.get("shell_commands", [])[:40]
-          print(json.dumps(d, indent=1))
-          EOF
-            python3 bench/ladder/annotate.py /tmp/summary-$m.json "agent eval json $m"
-          done
+        run: python3 bench/agent-eval/annotate_runs.py out/gemini/summary-onboard.json "agent eval json onboard"
+      - name: Skilled runs as annotations (json)
+        if: always() && env.HAS_KEY == 'true'
+        run: python3 bench/agent-eval/annotate_runs.py out/gemini/summary-skilled.json "agent eval json skilled"
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
