@@ -60,6 +60,24 @@ jobs:
           node --check bench/ladder/contenders/contender_playwright.mjs
           node --check bench/ladder/contenders/contender_puppeteer.mjs
 
+  # The install path agents actually take: `curl install.sh | sh` (a
+  # release binary, or the cargo fallback while there is no release).
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - name: install.sh as an agent runs it
+        run: |
+          rustup default stable
+          cd "$RUNNER_TEMP"
+          BROWSER_TOOL_INSTALL_DIR="$RUNNER_TEMP/bin" sh "$GITHUB_WORKSPACE/install.sh" 2>&1 | tail -5 | tee /tmp/install.log
+          "$RUNNER_TEMP/bin/browser-tool" --version || { python3 "$GITHUB_WORKSPACE/bench/ladder/annotate.py" /tmp/install.log "install.sh failure"; exit 1; }
+          "$RUNNER_TEMP/bin/browser-tool" skill | head -3
+
   # Chrome for Testing builds: the current Stable and three milestones back,
   # chrome-headless-shell, and Beta (non-blocking early warning).
   browsers:

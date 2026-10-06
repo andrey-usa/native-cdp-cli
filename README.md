@@ -14,7 +14,7 @@ Protocol directly, and it is built for AI agents:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
-# or: cargo install --locked --git https://github.com/andrey-usa/native-cdp-cli
+# or: cargo install --locked --git https://github.com/andrey-usa/native-cdp-cli browser-tool
 browser-tool install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 

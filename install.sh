@@ -38,7 +38,8 @@ if [ -n "$target" ] && curl -fsSL --retry 3 -o "$tmp/bt.tar.gz" "$url" 2>/dev/nu
   echo "installed $DIR/browser-tool ($target, $VERSION)"
 elif command -v cargo >/dev/null 2>&1; then
   echo "no prebuilt binary for ${target:-$os/$arch}; building from source with cargo (about a minute)…"
-  cargo install --locked --git "https://github.com/$REPO" --bin browser-tool --root "$tmp/root"
+  # The repo also holds Rust benchmark contenders, so name the package.
+  cargo install --locked --git "https://github.com/$REPO" browser-tool --root "$tmp/root"
   install -m 0755 "$tmp/root/bin/browser-tool" "$DIR/browser-tool"
   echo "installed $DIR/browser-tool (built from source)"
 else
