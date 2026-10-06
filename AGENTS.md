@@ -35,27 +35,46 @@ gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
 | `ladder table N/M` | bench.yml | the markdown results table |
 | `ladder json N/M` | bench.yml | `publish.json` (chart-ready results; join chunks in order) |
 | `ladder log tail N/M` | bench.yml (on failure) | last 30 KB of ladder.log |
+| `cdp check …` | ci.yml (every browser in the matrix) | CDP methods/params/enums the tests sent vs that Chrome's `/json/protocol` |
+| `cargo test failure (<browser>)` | ci.yml compat matrix | failing test output on that Chrome build |
+| `agent eval scripted/onboard/skilled N/M` | agent-eval.yml | pass table per tool and task, failure reasons |
+| `agent eval json <mode> N/M` | agent-eval.yml | every run: answer, checks, requests, tokens, shell commands |
+| `gemini smoke failure` | agent-eval.yml | why the model call failed (quota, model id, key) |
 
 If something you need isn't there, add an annotation for it (see
 `bench/ladder/annotate.py`) — don't push a debug commit to find out.
 
 ## 3. Fast loop
 
-1. **Local first** when you have Chrome and crates.io: `cargo test` runs the
-   browser e2e tests (serve protocol, `ax` refs, trusted clicks, named
-   sessions) against the local Chrome; `cargo clippy -- -D warnings` is the
-   CI lint gate.
+1. **Local first.** `cargo test` runs the browser e2e tests against a local
+   Chrome. browser-tool finds `$CHROME_BIN`, a system Chrome, or the
+   Playwright/Puppeteer caches (`/opt/pw-browsers`, `~/.cache/ms-playwright`).
+   The tests cover the serve protocol, sessions, and the full Acme Supply
+   scenario in `tests/site_scenarios.rs` (about 10 s).
+   `cargo clippy --all-targets -- -D warnings` is the lint gate.
+   **No crates.io in your sandbox?** CI publishes the vendored dependencies to
+   a git ref, so you can still build offline (git to GitHub usually works):
+   ```sh
+   git fetch origin refs/cache/vendor:refs/cache/vendor
+   mkdir -p ../bt-vendor && git archive refs/cache/vendor | tar -x -C ../bt-vendor
+   mkdir -p ~/.cargo && printf '[source.crates-io]\nreplace-with = "v"\n[source.v]\ndirectory = "%s"\n' "$(cd ../bt-vendor && pwd)/vendor" >> ~/.cargo/config.toml
+   cargo test --offline
+   ```
+   The ref is refreshed by `vendor.yml` whenever `Cargo.lock` changes.
+   Manual poking: run `python3 bench/site/server.py --port 8765`, then drive
+   it with `browser-tool -s dev …`.
 2. **No local browser/registry?** Push a *branch* and dispatch narrow runs:
    ```sh
    gh workflow run ci.yml    --ref my-branch                      # ~3 min
    gh workflow run bench.yml --ref my-branch -f reps=1 \
        -f only=bt-serve,gorod -f scenarios=                        # ~3 min, session gate only
    ```
-   `only` takes any contender names (`bt-serve bt-edge bt-brave bt-lightpanda
-   playwright puppeteer chromiumoxide chromey chromedp gorod`); `scenarios` is
-   any of `eval,cold,realworld,browse,agent` (empty = the session gate only;
-   `agent` = the one-process-per-step CLI scenario, browser-tool vs
-   agent-browser).
+   `only` takes any contender names (`bt-serve bt-shell bt-edge bt-brave
+   bt-lightpanda playwright puppeteer chromiumoxide chromey chromedp gorod`);
+   `scenarios` is any of `eval,cold,realworld,browse,agent` (empty = the
+   session gate only; `agent` = one step per CLI process / MCP call:
+   browser-tool, agent-browser, playwright-cli, Playwright MCP, Chrome
+   DevTools MCP).
 3. **Judge a perf change with an A/B in ONE run.** GitHub runners differ
    between runs by more than most changes are worth, so never compare
    numbers across runs. `baseline_ref` builds a second browser-tool from any
@@ -67,11 +86,24 @@ If something you need isn't there, add an annotation for it (see
    ```
    Every browser-tool run also reports where its launch time went
    (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
-4. **One decisive run per hypothesis.** Decide beforehand what output would
+4. **Browser compatibility** is part of `ci.yml`: Chrome Stable plus three
+   milestones back, chrome-headless-shell and Beta (non-blocking). Each one
+   runs the e2e tests with `BT_CDP_TRACE` and then `tools/cdp_check.py`.
+   Before using a new CDP method or parameter, check it exists in the
+   *oldest* supported milestone: `bash tools/protocol_dump.sh <chrome> p.json`.
+5. **Agent eval** (`agent-eval.yml`, needs the `GEMINI_API_KEY` secret):
+   Gemini CLI does the five Acme tasks with each tool. Free-tier quota is
+   per day, so narrow it with `-f tools=browser-tool -f tasks=purchase`
+   while iterating. `--agent scripted` runs the same checks locally without
+   a model:
+   ```sh
+   python3 bench/agent-eval/run.py --agent scripted --out /tmp/eval
+   ```
+6. **One decisive run per hypothesis.** Decide beforehand what output would
    confirm or kill the hypothesis, and make sure that output lands in an
    annotation. If two runs in a row didn't change your mind, stop and re-read
    the code path end to end instead of adding more logging.
-5. Full `reps=3` bench only after CI and a narrow run are green.
+7. Full `reps=3` bench only after CI and a narrow run are green.
 
 ## 4. Root cause before mitigation
 
@@ -91,6 +123,16 @@ If something you need isn't there, add an annotation for it (see
   found by making the gate report *why* it failed.
 - Vendor downloads (Edge, Brave, Lightpanda) flake; their install steps are
   `continue-on-error` and a missing binary shows under "Skipped".
+- **A failure on one Chrome milestone only: bisect it in one run.**
+  `chrome-bisect.yml` runs the same test binary on one Chrome for Testing
+  milestone under several env variants (`BT_DROP_FLAGS`, `BT_EXTRA_FLAGS`,
+  `BT_CDP_TRANSPORT=ws|pipe`, `BT_NO_DISCOVER=1`) and annotates a pass/fail
+  table. On a branch, commit `.github/bisect.env` to trigger it (never merge
+  that file). Three rounds found that `--disable-features=OptimizationHints`
+  segfaults Chrome 151 (runs 37461070056 → 37461788587 → 37464048004).
+- A scenario step that fails dumps the page state (URL, visibility, focus,
+  hovered chain, last steps, `ax`) into the `cargo test failure` annotation.
+  Read that before guessing at a flake.
 
 ### What A/B runs have already settled (don't redo)
 
@@ -99,6 +141,9 @@ If something you need isn't there, add an annotation for it (see
 | standard automation flags (go-rod/chromiumoxide set) + `--no-startup-window` + kill-based close | session −23%, cold start −33% | 37410456058 |
 | adopt Chrome's initial tab instead of creating the first page | no gain: first_page −60 ms but ws_connect +70 ms — Chrome's startup is serialized on its UI thread | 37411020717 |
 | current-thread tokio runtime (no cross-thread hops per round trip) | no gain: engine eval 0.458 vs 0.459 ms | 37411391276 |
+| CDP over `--remote-debugging-pipe` instead of a WebSocket port | no speed gain (pipe 0.31 s cold vs master's WebSocket 0.31 s); kept as default because it opens no TCP port and Chrome exits with its driver (WebSocket leaks the browser: `killed_session_server_takes_its_browser_down`) | 37465364738 |
+| chrome-headless-shell instead of Chrome (`bt-shell`) | session 0.66 → 0.32 s, cold 0.31 → 0.10 s, browser PSS 356 → 228 MB; used when no system Chrome is installed (cache lookup), or via `$CHROME_BIN` | 37465364738 |
+| new ops, dialog/popup/navigation tracking, text `ax` | no session cost: 0.65 → 0.66 s vs master | 37465364738 |
 
 ## 5. Measurement rules
 
@@ -120,6 +165,13 @@ If something you need isn't there, add an annotation for it (see
   read it sparingly (the ladder reads PSS every 250 ms, CPU every 50 ms).
 - Every number in README must cite the run id it came from. Regenerate the
   README table from the run's `publish.json` rather than retyping it.
+- Agent eval: judge success from the site's recorded state (`/__state`)
+  and the final answer, never from the agent's own claim. Keep the model,
+  prompt template, settings, Chrome and site identical across tools. Each
+  tool gets the skill its own vendor ships.
+- For agents, **tokens matter more than milliseconds**. An `ax` that takes
+  100 ms but is half the size is the better trade, because LLM thinking time
+  between steps is seconds.
 
 ## 6. Repo hygiene and history
 
@@ -128,17 +180,25 @@ If something you need isn't there, add an annotation for it (see
   commits on master. Don't force-push master unless the owner asks.
 - Outputs go to `bench/ladder/out/` (gitignored). Never commit cookie jars,
   reports or page dumps from other tools run in this checkout.
-- Keep `.claude/skills/browser-tool/SKILL.md` and `docs/browser-tool.md` in
-  step with the CLI whenever ops or flags change.
+- Keep `.claude/skills/browser-tool/SKILL.md`, `docs/browser-tool.md`,
+  `llms.txt` and the `OPS` table in `src/protocol.rs` (`--help`) in step
+  with the CLI whenever ops or flags change. The skill is compiled into the
+  binary, so a stale skill ships with the next release.
 
 ## Map
 
 | path | what |
 |---|---|
-| `src/cdp/` | from-scratch CDP engine (transport, client, browser, page) |
+| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation state), `ax.rs` (snapshot tree) |
 | `src/protocol.rs` | CLI parsing + JSON-lines protocol + `Driver` |
 | `src/session.rs` | named Unix-socket sessions (`--session`, `start`) |
 | `src/timing.rs` | `BT_TIMINGS=1` phase timings printed at shutdown |
-| `tests/serve_roundtrip.rs` | browser e2e tests (run in CI with real Chrome) |
+| `tests/serve_roundtrip.rs` | serve protocol + named session e2e |
+| `tests/site_scenarios.rs` | realistic end-to-end flow on the Acme site (SPA, iframes, shadow DOM, dialogs, popups, login, upload, slow load) |
+| `tests/edge_cases.rs` | one regression test per reproduced bug (hung loads, browser death, slow popups, styled checkboxes, cross-origin iframes, caller-relative paths); pages in `tests/fixtures/edge_site.py` |
+| `bench/site/server.py` | Acme Supply: deterministic local shop with state at `/__state` |
+| `bench/agent-eval/` | LLM agent eval (Gemini CLI) across browser-tool / playwright-cli / agent-browser |
+| `tools/` | `cdp_check.py`, `protocol_dump.sh`, `cft_matrix.py` (Chrome for Testing matrix) |
+| `.claude/skills/browser-tool/SKILL.md` | the agent guide, embedded in the binary (`browser-tool skill`) |
 | `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/` (incl. `cli_agent.py` for the agent CLI scenario), `annotate.py` |
-| `.github/workflows/` | `ci.yml` (every push/PR), `bench.yml` (manual dispatch) |
+| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix), `bench.yml` (manual), `agent-eval.yml` (manual/weekly), `vendor.yml`, `release.yml` (tags) |

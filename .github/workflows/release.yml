@@ -1,0 +1,80 @@
+name: release
+
+# Prebuilt binaries for agents and people without a Rust toolchain:
+# static Linux (musl) x86_64/aarch64 and macOS arm64/x86_64, attached to a
+# GitHub release. install.sh downloads the right one.
+
+on:
+  push:
+    tags: ["v*"]
+    # Dry run: pushing a `release-test/*` branch builds and packages every
+    # target without publishing anything.
+    branches: ["release-test/**"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to (re)build and publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+      - name: musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Build
+        run: cargo build --release --locked --bin browser-tool --target ${{ matrix.target }}
+      - name: Smoke test (native targets)
+        if: "!contains(matrix.target, 'x86_64-apple') || runner.arch == 'X64'"
+        run: |
+          bin=target/${{ matrix.target }}/release/browser-tool
+          "$bin" --version
+          "$bin" skill | head -3
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release -czf dist/browser-tool-${{ matrix.target }}.tar.gz browser-tool
+          (cd dist && shasum -a 256 browser-tool-${{ matrix.target }}.tar.gz > browser-tool-${{ matrix.target }}.tar.gz.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ls -la dist
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
+          echo "::notice title=release::$TAG published with $(ls dist | wc -l) files"
