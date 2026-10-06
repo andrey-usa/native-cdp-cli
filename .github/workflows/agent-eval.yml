@@ -4,8 +4,8 @@ name: agent-eval
 # realistic tasks on the local Acme Supply site with each browser tool:
 # browser-tool vs playwright-cli vs agent-browser. See bench/agent-eval/run.py.
 #
-# Needs the repository secret GEMINI_API_KEY (a free key from
-# https://aistudio.google.com/apikey). Without it only the scripted baseline
+# Needs GEMINI_API_KEY (a free key from https://aistudio.google.com/apikey)
+# as a secret of the `main` environment (or of the repository). Without it only the scripted baseline
 # runs (it validates the site, the checks and the harness).
 #
 # Free-tier budget: each skilled run is ~10-30 model requests; the default
@@ -40,6 +40,9 @@ jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    # GEMINI_API_KEY is an environment secret (Settings → Environments →
+    # main); a job only sees it when it names the environment.
+    environment: main
     env:
       MODEL: ${{ inputs.model || 'gemini-3.5-flash-lite' }}
       TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}

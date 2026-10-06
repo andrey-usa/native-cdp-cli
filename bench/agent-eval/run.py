@@ -12,7 +12,7 @@ the local Acme Supply site (bench/site/server.py) and one browser tool:
 Everything else is identical across tools: same model, prompt template,
 settings, Chrome binary, site and checks. Success is judged from the site's
 recorded state (orders, tickets, logins) plus the final answer, never from
-the agent's own claim. The run also records model requests, tokens, tool
+the agent's own claim. The run also records model turns, tokens, tool
 calls, how many shell commands used the tool, and off-tool workarounds
 (curl against the site, ad-hoc Playwright/Puppeteer scripts).
 
@@ -210,16 +210,25 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
     result = next((e for e in reversed(events) if e.get("type") == "result"), {})
     stats = result.get("stats") or {}
     models = stats.get("models") or {}
-    requests = 0
-    for m in models.values() if isinstance(models, dict) else []:
-        requests += ((m.get("api") or {}).get("totalRequests") or 0) if isinstance(m, dict) else 0
+    # stream-json stats carry tokens but no request count: count model turns
+    # instead (one turn = one model call; a new one starts after each batch
+    # of tool results).
+    requests, after_tools = (1 if events else 0), False
+    for e in events:
+        kind = e.get("type")
+        if kind == "tool_result":
+            after_tools = True
+        elif after_tools and (kind == "tool_use" or (kind == "message" and e.get("role") == "assistant")):
+            requests += 1
+            after_tools = False
     errors = [e.get("message", "") for e in events if e.get("type") == "error"]
     return {
         "exit": proc.returncode, "timed_out": timed_out, "wall_s": round(wall, 1),
         "text": text, "shell_commands": shells, "tools_used": tool_names,
         "requests": requests or None, "models": list(models) if isinstance(models, dict) else [],
         "tokens_in": stats.get("input_tokens"), "tokens_out": stats.get("output_tokens"),
-        "tokens_total": stats.get("total_tokens"), "tool_calls": stats.get("tool_calls"),
+        "tokens_total": stats.get("total_tokens"), "tokens_cached": stats.get("cached"),
+        "tool_calls": stats.get("tool_calls"),
         "errors": errors[-3:], "stderr_tail": err[-1500:] if proc.returncode else "",
     }
 
@@ -412,7 +421,7 @@ def main() -> int:
         return statistics.median(xs) if xs else None
 
     lines = [f"### Agent eval — {args.mode} ({args.agent}, model {args.model if args.agent == 'gemini' else '—'})", "",
-             "| tool | passed | median requests | median shell cmds | median tokens | median wall | off-tool cmds |",
+             "| tool | passed | median model turns | median shell cmds | median tokens | median wall | off-tool cmds |",
              "|---|---|---|---|---|---|---|"]
     summary = []
     for tool in tools:
