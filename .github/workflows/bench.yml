@@ -31,7 +31,7 @@ on:
         required: false
         default: 'eval,cold,realworld,browse,agent'
       baseline_ref:
-        description: "A/B: also run browser-tool built from this ref as bt-baseline (e.g. master); same machine, same run"
+        description: "A/B: also run browser-tool built from this ref (branch, tag or FULL commit SHA) as bt-baseline; same machine, same run"
         required: false
         default: ''
 

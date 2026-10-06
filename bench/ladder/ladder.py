@@ -244,6 +244,7 @@ class BrowserSampler(threading.Thread):
         self.peak_pss_kb = 0
         self._stop_event = threading.Event()
         self._prev: dict[int, float] = {}
+        self._pss: dict[int, int] = {}  # last PSS reading per pid
 
     def run(self):
         tick = 0
@@ -253,8 +254,8 @@ class BrowserSampler(threading.Thread):
             # tick (250 ms) to keep the observer effect off the browser.
             with_pss = tick % 5 == 0
             tick += 1
-            total = 0
-            for pid in browser_pids(self.root_pid):
+            pids = browser_pids(self.root_pid)
+            for pid in pids:
                 sample = read_proc_stat(pid)
                 if sample is None:
                     continue
@@ -265,10 +266,16 @@ class BrowserSampler(threading.Thread):
                 elif prev is None:
                     self.cpu_s += cpu  # first sight: count what it already used
                 self._prev[pid] = cpu
-                if with_pss:
-                    total += pss_kb(pid) or 0
-            if with_pss:
-                self.peak_pss_kb = max(self.peak_pss_kb, total)
+                # Read PSS on the slow tick, and at first sight of a process
+                # so short runs (e.g. Lightpanda's ~0.2 s session) still get
+                # a reading; between readings each pid keeps its last value.
+                if with_pss or pid not in self._pss:
+                    v = pss_kb(pid)
+                    if v is not None:
+                        self._pss[pid] = v
+            live = set(pids)
+            total = sum(v for p, v in self._pss.items() if p in live)
+            self.peak_pss_kb = max(self.peak_pss_kb, total)
             self._stop_event.wait(self.interval)
 
     def stop(self):

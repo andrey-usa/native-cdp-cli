@@ -63,7 +63,7 @@ If something you need isn't there, add an annotation for it (see
    ```sh
    gh workflow run bench.yml --ref my-branch -f reps=3 \
        -f only=bt-serve,bt-baseline,gorod -f scenarios=eval,cold \
-       -f baseline_ref=master
+       -f baseline_ref=master        # branch, tag or full 40-char SHA
    ```
    Every browser-tool run also reports where its launch time went
    (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
