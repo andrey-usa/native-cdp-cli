@@ -1,0 +1,11 @@
+//! browser-tool: from-scratch CDP CLI for AI-agentic browser exploration.
+//!
+//! Native Rust Chrome DevTools Protocol engine (no WebDriver, no external
+//! driver crates): direct CDP JSON-RPC over WebSocket, two-worker Tokio
+//! runtime, JSON-lines protocol with `serve` mode and one-shot subcommands.
+
+pub mod browser;
+pub mod protocol;
+#[cfg(unix)]
+pub mod session;
+pub mod cdp;

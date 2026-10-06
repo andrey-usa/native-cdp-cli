@@ -1,0 +1,480 @@
+//! Chrome process launch and DevTools endpoint discovery.
+//!
+//! We launch Chrome headless with `--remote-debugging-port=0` (Chrome picks a
+//! free port and prints the chosen URL) and discover that URL by reading
+//! Chrome's stderr line `DevTools listening on ws://…` — the same approach
+//! chromiumoxide and zendriver-rs use.
+//!
+//! That stderr line is emitted by Chrome as soon as the browser-level DevTools
+//! WebSocket is accepting connections, so it is fast and race-free. It replaces
+//! the previous two-step discovery — read the `DevToolsActivePort` file, then
+//! poll the HTTP `/json/version` endpoint — whose HTTP server the browser is
+//! not always ready to serve (it timed out on newer Chrome builds in CI), and
+//! whose failure message was drowned out by Chrome's own DBus noise on stderr.
+//!
+//! Chrome's stderr is captured on a piped handle drained by a background
+//! thread, so child-process DBus noise never reaches `browser-tool`'s stderr
+//! (where the protocol lives and where launch errors are reported). That is what
+//! makes a failed launch stop being "silent": the only thing on our stderr is
+//! `browser-tool`'s own message, with a captured stderr tail attached.
+//!
+//! If a browser/engine doesn't announce the URL on stderr, we fall back to the
+//! classic port-file + HTTP poll below.
+
+use std::io::{BufRead, Read, Write};
+use std::net::TcpStream;
+use std::process::{Child, ChildStderr, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Context, Result};
+
+/// How long a browser has to announce its DevTools URL after spawn.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The stderr line Chrome prints once the browser DevTools WebSocket is live.
+const DEVTOOLS_LISTENING: &str = "DevTools listening on ws://";
+
+/// Bytes of captured stderr retained for launch-failure messages.
+const STDERR_TAIL_BYTES: usize = 2000;
+
+/// Maximum stderr bytes retained in memory while capturing during discovery.
+const STDERR_BUF_CAP: usize = 64 * 1024;
+
+pub struct LaunchedChrome {
+    pub child: Child,
+    pub profile_dir: tempfile::TempDir,
+    pub ws_url: String,
+}
+
+/// Guard that reaps/terminates the spawned browser on drop unless disarmed.
+/// Ensures a failed launch never leaks a Chrome process (whose DevTools stderr
+/// we captured) — a failed `target.createTarget`-style discovery previously
+/// left browser processes running.
+struct KillOnDrop(Option<Child>);
+
+impl KillOnDrop {
+    fn as_mut(&mut self) -> &mut Child {
+        self.0.as_mut().expect("guard disarmed")
+    }
+    /// Take ownership back (e.g. to hand the child to the session) and stop
+    /// killing on drop.
+    fn disarm(mut self) -> Child {
+        self.0
+            .take()
+            .expect("guard disarmed")
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Launch `exe` headless (or headed) with a fresh profile; return the child,
+/// the profile dir (deleted on drop), and the browser-level WS debugger URL.
+pub fn launch_chrome(
+    exe: &str,
+    headless: bool,
+    chrome_flags: &[String],
+    debugging_port: Option<u16>,
+) -> Result<LaunchedChrome> {
+    let profile_dir = tempfile::Builder::new()
+        .prefix("cdp-cli-profile-")
+        .tempdir()
+        .context("create chrome profile dir")?;
+
+    let mut cmd = Command::new(exe);
+    if headless {
+        cmd.arg("--headless=new");
+    }
+    // `=0` lets Chrome pick a free port; we read it back from its stderr line. A
+    // fixed port is only used by engines whose launcher needs it up front (e.g.
+    // the lightpanda shim), in which case we still learn the URL from the stderr
+    // line when the engine supports it.
+    if let Some(port) = debugging_port {
+        cmd.arg(format!("--remote-debugging-port={port}"));
+    } else {
+        cmd.arg("--remote-debugging-port=0");
+    }
+    cmd.arg(format!(
+        "--user-data-dir={}",
+        profile_dir.path().display()
+    ))
+    .args(chrome_flags)
+    .arg("about:blank")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    // Pipe stderr: scanned for the DevTools URL, captured for diagnostics, and
+    // kept off our inherited stderr so Chrome child-process noise can't mask the
+    // `browser-tool` error reporting that lives on our stderr.
+    .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().context("spawn chrome")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("chrome was spawned without a stderr pipe")?;
+    let mut kill = KillOnDrop(Some(child));
+    let capture = Capture::start(stderr);
+
+    let deadline = Instant::now() + DISCOVERY_TIMEOUT;
+
+    // Phase 1: scan Chrome's stderr for `DevTools listening on ws://…`. Fast and
+    // reliable on Chromium/Chrome/Edge (>= M109).
+    let ws_url = loop {
+        if let Some(url) = capture.url() {
+            break Some(url);
+        }
+        match kill.as_mut().try_wait() {
+            // Real failure: Chrome exited non-zero during launch.
+            Ok(Some(status)) if !status.success() => {
+                thread::sleep(Duration::from_millis(20));
+                let _ = kill.disarm().wait(); // already exited; avoid double-kill noise
+                return Err(anyhow!(
+                    "chrome exited during launch (status {status}); captured stderr:\n{}",
+                    capture.tail()
+                ));
+            }
+            // The launcher stub exited cleanly (e.g. the Edge stub) while the
+            // real browser runs on as a grandchild. Stop scanning stderr and
+            // fall through to the port-file/HTTP fallback.
+            Ok(Some(_)) => break None,
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    let ws_url = match ws_url {
+        Some(url) => url,
+        None => {
+            // Phase 2 (fallback): engines/browsers that don't print the stderr
+            // line — recover the URL from the DevToolsActivePort file plus an
+            // HTTP `/json/version` poll. Both tolerate a launcher-stub exit.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let port = read_devtools_port(&profile_dir, kill.as_mut())?;
+            poll_ws_url(port, remaining, kill.as_mut())?
+        }
+    };
+
+    // Keep draining the stderr pipe for the lifetime of the browser so Chrome
+    // never blocks on a full pipe buffer; the thread ends itself on Chrome exit.
+    capture.detach();
+
+    Ok(LaunchedChrome {
+        child: kill.disarm(),
+        profile_dir,
+        ws_url,
+    })
+}
+
+/// The captured stderr line carrying the browser DevTools WebSocket URL, if any.
+fn extract_devtools_url(line: &str) -> Option<String> {
+    let start = line.find(DEVTOOLS_LISTENING)?;
+    let rest = &line[start + DEVTOOLS_LISTENING.len()..];
+    rest.split_whitespace()
+        .next()
+        .map(|url| format!("ws://{url}"))
+}
+
+/// Background drain of a child's stderr: records the DevTools URL the moment
+/// Chrome prints it, and retains a bounded tail of stderr for diagnostics while
+/// discovery is in progress.
+struct Capture {
+    url: Arc<Mutex<Option<String>>>,
+    buf: Arc<Mutex<Vec<u8>>>,
+    capturing: Arc<AtomicBool>,
+}
+
+impl Capture {
+    fn start(stderr: ChildStderr) -> Self {
+        let url = Arc::new(Mutex::new(None));
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let capturing = Arc::new(AtomicBool::new(true));
+        let url_clone = Arc::clone(&url);
+        let buf_clone = Arc::clone(&buf);
+        let capturing_clone = Arc::clone(&capturing);
+
+            thread::spawn(move || {
+                let reader = std::io::BufReader::new(stderr).lines();
+                for line in reader.map_while(Result::ok) {
+                    if let Some(u) = extract_devtools_url(&line) {
+                        if let Ok(mut slot) = url_clone.lock() {
+                            if slot.is_none() {
+                                *slot = Some(u);
+                            }
+                        }
+                    }
+                    if capturing_clone.load(Ordering::Relaxed) {
+                        let mut b = match buf_clone.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        b.extend_from_slice(line.as_bytes());
+                        b.push(b'\n');
+                        if b.len() > STDERR_BUF_CAP {
+                            // Keep only the most recent half to bound memory.
+                            let drain = b.len() - STDERR_BUF_CAP / 2;
+                            b.drain(..drain);
+                        }
+                    }
+                }
+            });
+
+        Self {
+            url,
+            buf,
+            capturing,
+        }
+    }
+
+    /// Take the DevTools URL once Chrome has announced it.
+    fn url(&self) -> Option<String> {
+        self.url.lock().expect("capture lock poisoned").take()
+    }
+
+    /// Last `STDERR_TAIL_BYTES` chars of captured stderr (best-effort).
+    fn tail(&self) -> String {
+        let b = self.buf.lock().expect("capture lock poisoned");
+        let start = b.len().saturating_sub(STDERR_TAIL_BYTES);
+        String::from_utf8_lossy(&b[start..]).into_owned()
+    }
+
+    /// Detach the drain thread: keep reading Chrome's stderr for the browser's
+    /// lifetime so the pipe never back-pressures Chrome. Stop retaining stderr
+    /// so the captured tail is bounded to the discovery window.
+    fn detach(self) {
+        self.capturing.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Read the DevTools port Chrome chose (from the DevToolsActivePort file).
+///
+/// Tolerates a launcher stub (e.g. Edge's) exiting `0`: the real browser keeps
+/// running as a grandchild and still writes this file, so an early stub exit is
+/// not treated as a launch failure here.
+fn read_devtools_port(profile_dir: &tempfile::TempDir, child: &mut Child) -> Result<u16> {
+    let port_file = profile_dir.path().join("DevToolsActivePort");
+    let start = Instant::now();
+    loop {
+        if let Ok(content) = std::fs::read_to_string(&port_file) {
+            if let Some(line) = content.lines().next() {
+                if let Ok(port) = line.trim().parse::<u16>() {
+                    return Ok(port);
+                }
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                anyhow::bail!("chrome exited during launch (status {status})");
+            }
+            _ => {}
+        }
+        if start.elapsed() > DISCOVERY_TIMEOUT {
+            anyhow::bail!("timed out waiting for DevToolsActivePort file");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Poll the DevTools HTTP server (`/json/version`) for the browser-level
+/// WebSocket URL, without a launcher child to watch (for servers like
+/// `lightpanda serve` that we spawn and manage directly).
+pub fn poll_ws_url_standalone(port: u16, timeout: Duration) -> Result<String> {
+    let start = Instant::now();
+    let mut logged = false;
+    loop {
+        if !logged && start.elapsed() > Duration::from_secs(5) {
+            eprintln!("[transport] still waiting for /json/version on 127.0.0.1:{port} ...");
+            logged = true;
+        }
+        match http_get_body("127.0.0.1", port, "/json/version") {
+            Ok(body) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(url) = v
+                        .get("webSocketDebuggerUrl")
+                        .and_then(|u| u.as_str())
+                    {
+                        return Ok(url.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    anyhow::bail!("lightpanda serve did not expose /json/version on 127.0.0.1:{port}: {e:#}");
+                }
+            }
+        }
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for /json/version on 127.0.0.1:{port}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Poll the DevTools HTTP server (`/json/version`) for the browser-level
+/// WebSocket URL. Tolerates a launcher-stub exit like [`read_devtools_port`].
+fn poll_ws_url(port: u16, timeout: Duration, child: &mut Child) -> Result<String> {
+    let start = Instant::now();
+    let mut attempts = 0u64;
+    loop {
+        attempts += 1;
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                anyhow::bail!("chrome exited during launch (status {status}) after {attempts} polls");
+            }
+            _ => {}
+        }
+        match http_get_body("127.0.0.1", port, "/json/version") {
+            Ok(body) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(url) = v
+                        .get("webSocketDebuggerUrl")
+                        .and_then(|u| u.as_str())
+                    {
+                        return Ok(url.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                if attempts.is_multiple_of(40) {
+                    eprintln!("[browser] /json/version poll {attempts}: {e:#}");
+                }
+            }
+        }
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for chrome DevTools on port {port} after {attempts} polls");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Minimal blocking HTTP GET; returns the response body.
+///
+/// Stops as soon as the body is complete (Content-Length or a chunked
+/// terminator) instead of reading to EOF: keep-alive servers such as
+/// `lightpanda serve` answer `/json/version` but never close the socket, so
+/// a read-to-EOF client sat in `read` until its 5 s timeout (EAGAIN) on
+/// every poll and never saw the URL.
+fn http_get_body(host: &str, port: u16, path: &str) -> Result<String> {
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    // NB: Chrome's DevTools HTTP server rejects HTTP/1.0 outright.
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some(body) = complete_body(&buf) {
+            return Ok(String::from_utf8_lossy(&body).into_owned());
+        }
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    // EOF: whatever follows the headers is the body.
+    let resp = String::from_utf8_lossy(&buf);
+    let body = resp
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b)
+        .or_else(|| resp.split_once("\n\n").map(|(_, b)| b))
+        .ok_or_else(|| anyhow::anyhow!("malformed http response"))?;
+    Ok(body.to_string())
+}
+
+/// The response body once `buf` holds all of it (by Content-Length or
+/// chunked encoding); `None` while more bytes are needed or the framing is
+/// unknown (then the caller reads to EOF).
+fn complete_body(buf: &[u8]) -> Option<Vec<u8>> {
+    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+    let body = &buf[header_end + 4..];
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(|v| v.trim().to_string())
+    };
+    if let Some(len) = header("content-length:").and_then(|v| v.parse::<usize>().ok()) {
+        return (body.len() >= len).then(|| body[..len].to_vec());
+    }
+    if header("transfer-encoding:").is_some_and(|v| v.contains("chunked")) {
+        let mut out = Vec::new();
+        let mut at = 0;
+        loop {
+            let line_end = at + body.get(at..)?.windows(2).position(|w| w == b"\r\n")?;
+            let size_hex = String::from_utf8_lossy(&body[at..line_end]);
+            let size = usize::from_str_radix(size_hex.split(';').next()?.trim(), 16).ok()?;
+            let data = line_end + 2;
+            if size == 0 {
+                return Some(out);
+            }
+            out.extend_from_slice(body.get(data..data + size)?);
+            at = data + size + 2;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_devtools_url_from_chrome_stderr() {
+        let line = "DevTools listening on ws://127.0.0.1:65408/devtools/browser/abc-123";
+        assert_eq!(
+            extract_devtools_url(line),
+            Some("ws://127.0.0.1:65408/devtools/browser/abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn http_body_completes_without_eof() {
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        assert_eq!(complete_body(resp).as_deref(), Some(&b"hello"[..]));
+        assert_eq!(complete_body(&resp[..resp.len() - 1]), None, "needs all 5 bytes");
+        let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
+        assert_eq!(complete_body(chunked).as_deref(), Some(&b"abcde"[..]));
+        assert_eq!(complete_body(b"HTTP/1.1 200 OK\r\n\r\nbody"), None, "unframed: read to EOF");
+    }
+
+    /// A keep-alive server that answers but never closes (lightpanda's
+    /// `/json/version`) must not stall the poll until the read timeout.
+    #[test]
+    fn http_get_returns_before_keep_alive_server_closes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req);
+            let body = r#"{"webSocketDebuggerUrl":"ws://127.0.0.1:1/x"}"#;
+            write!(sock, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            std::thread::sleep(Duration::from_secs(3)); // hold the socket open
+        });
+        let started = Instant::now();
+        let body = http_get_body("127.0.0.1", port, "/json/version").unwrap();
+        assert!(body.contains("webSocketDebuggerUrl"), "{body}");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn ignores_non_devtools_stderr() {
+        assert_eq!(extract_devtools_url("[0123/456789.123456:ERROR:chrome.cpp] noise"), None);
+    }
+}

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Tests (unit + browser e2e — the runner's preinstalled Chrome drives serve, ax refs and named sessions)
+        run: |
+          set -o pipefail
+          if ! cargo test --locked 2>&1 | tee /tmp/test.log; then
+            # Surface the failure through the checks API, not just the log.
+            sed -n '/^---- /,/^test result/p' /tmp/test.log | grep -v -E '^ +[0-9]+: |^ +at ' | tail -c 30000 > /tmp/test-tail.log || true
+            python3 bench/ladder/annotate.py /tmp/test-tail.log "cargo test failure"
+            exit 1
+          fi
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Ladder harness syntax check
+        run: |
+          python3 -m py_compile bench/ladder/ladder.py bench/ladder/annotate.py \
+            bench/ladder/gen_fixtures.py \
+            bench/ladder/contenders/bt_serve.py
+          node --check bench/ladder/contenders/contender_playwright.mjs
+          node --check bench/ladder/contenders/contender_puppeteer.mjs

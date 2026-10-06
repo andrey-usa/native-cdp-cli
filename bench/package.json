@@ -1,0 +1,12 @@
+{
+  "name": "car-part-finder-bench",
+  "private": true,
+  "type": "module",
+  "description": "DEPRECATED historical harness: Playwright + Chrome (node driver) vs Playwright attached to a Lightpanda CDP server. Realtime driving is now browser-tool (src/bin/browser-tool.rs), zero Node.js. Counterpart of examples/bench_browser.rs (RustWright).",
+  "scripts": {
+    "bench": "node pw-bench.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
