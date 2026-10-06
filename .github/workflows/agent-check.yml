@@ -18,7 +18,7 @@ on:
     branches: [master]
   pull_request:
   schedule:
-    - cron: "23 5 * * *"
+    - cron: "23 9 * * *"   # after the free quota resets (midnight Pacific)
   workflow_dispatch:
 
 permissions:

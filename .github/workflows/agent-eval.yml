@@ -35,7 +35,7 @@ on:
         description: "repetitions per tool x task"
         default: "1"
   schedule:
-    - cron: "41 7 * * 2"
+    - cron: "41 9 * * 2"   # after the free quota resets (midnight Pacific)
 
 permissions:
   contents: read
