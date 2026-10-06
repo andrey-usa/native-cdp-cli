@@ -23,6 +23,51 @@ fn engine_runtime() -> Result<tokio::runtime::Runtime> {
         .context("build CDP engine runtime")
 }
 
+/// Chromium launch flags.
+///
+/// Beyond the basics, this is the standard automation set that go-rod,
+/// chromiumoxide, Puppeteer and Playwright all ship by default: no
+/// background networking, component updates, crash reporter, sync, metrics
+/// or Translate competing with the page for CPU, and no throttling of
+/// background tabs. `--no-startup-window` skips Chrome's initial tab (the
+/// session opens its own), saving a renderer process per launch. Site
+/// isolation is relaxed as go-rod does, so cross-site iframes share a
+/// renderer instead of each spawning one (we already run `--no-sandbox`).
+/// Chrome honours only the last `--disable-features` / `--enable-features`
+/// flag, so each list is a single flag.
+const CHROME_FLAGS: &[&str] = &[
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--no-startup-window",
+    "--disable-default-apps",
+    "--disable-infobars",
+    "--window-size=1440,900",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--disable-extensions",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-sync",
+    "--metrics-recording-only",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--force-color-profile=srgb",
+    "--disable-site-isolation-trials",
+    "--disable-features=Translate,TranslateUI,OptimizationHints,MediaRouter,DialMediaRouteProvider,AutofillServerCommunication,CertificateTransparencyComponentUpdater,InterestFeedContentSuggestions,site-per-process",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+];
+
 /// Common Chromium/Chrome/Edge install paths used when no override is given.
 fn common_executables() -> Vec<String> {
     let mut paths = Vec::new();
@@ -155,9 +200,8 @@ impl BrowserSession {
         executable: Option<&str>,
         nav_timeout_ms: f64,
     ) -> Result<Self> {
-        eprintln!("[browser] launch: engine='{engine}'");
+        let launch_started = std::time::Instant::now();
         let lightpanda = is_lightpanda(engine);
-        eprintln!("[browser] is_lightpanda={lightpanda}");
         let runtime = engine_runtime()?;
         let handle = runtime.handle().clone();
 
@@ -183,16 +227,7 @@ impl BrowserSession {
                 &LaunchOptions {
                     exe: exe.clone(),
                     headless,
-                    chrome_flags: vec![
-                        "--no-sandbox".to_string(),
-                        "--disable-dev-shm-usage".to_string(),
-                        "--disable-blink-features=AutomationControlled".to_string(),
-                        "--no-first-run".to_string(),
-                        "--no-default-browser-check".to_string(),
-                        "--disable-default-apps".to_string(),
-                        "--disable-infobars".to_string(),
-                        "--window-size=1440,900".to_string(),
-                    ],
+                    chrome_flags: CHROME_FLAGS.iter().map(|f| f.to_string()).collect(),
                     debugging_port: None,
                 },
             )?;
@@ -202,11 +237,15 @@ impl BrowserSession {
             );
             (browser, exe)
         };
+        crate::timing::record("browser_up", launch_started);
+        let page_started = std::time::Instant::now();
         let page = if lightpanda {
             browser.new_page_lightpanda(Some("about:blank"))?
         } else {
             browser.new_page(Some("about:blank"))?
         };
+        crate::timing::record("first_page", page_started);
+        crate::timing::record("launch_total", launch_started);
         Ok(Self {
             browser,
             pages: vec![page],

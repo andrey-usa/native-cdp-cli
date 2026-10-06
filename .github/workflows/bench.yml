@@ -27,9 +27,13 @@ on:
         required: false
         default: ''
       scenarios:
-        description: "optional stages besides the session gate: eval,cold,realworld,browse"
+        description: "optional stages besides the session gate: eval,cold,realworld,browse,agent"
         required: false
-        default: 'eval,cold,realworld,browse'
+        default: 'eval,cold,realworld,browse,agent'
+      baseline_ref:
+        description: "A/B: also run browser-tool built from this ref as bt-baseline (e.g. master); same machine, same run"
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -54,6 +58,7 @@ jobs:
           workspaces: |
             . -> target
             bench/ladder/contenders/chromiumoxide -> target
+            bench/ladder/contenders/chromey -> target
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -106,14 +111,38 @@ jobs:
           chmod a+x /usr/local/bin/lightpanda
           lightpanda version || true
 
+      - name: Install agent-browser (agent-style CLI contender)
+        # Optional: a failed install shows up under "Skipped".
+        continue-on-error: true
+        run: |
+          npm install -g agent-browser@0.38.2
+          npm ls -g agent-browser
+
       - name: Build browser-tool (release)
         run: cargo build --release --bin browser-tool
 
+
+      - name: Build baseline browser-tool (A/B)
+        if: inputs.baseline_ref != ''
+        run: |
+          git fetch --depth=1 origin "${{ inputs.baseline_ref }}"
+          git worktree add /tmp/bt-baseline FETCH_HEAD
+          cargo build --release --bin browser-tool \
+            --manifest-path /tmp/bt-baseline/Cargo.toml --target-dir /tmp/bt-baseline-target
+          echo "BROWSER_TOOL_BASELINE=/tmp/bt-baseline-target/release/browser-tool" >> "$GITHUB_ENV"
+          echo "baseline: $(git -C /tmp/bt-baseline rev-parse --short HEAD)"
 
       - name: Build chromiumoxide contender (release)
         run: |
           cargo build --release \
             --manifest-path bench/ladder/contenders/chromiumoxide/Cargo.toml
+
+      - name: Build chromey contender (release)
+        # Optional (crates.io latest): a build failure shows under "Skipped".
+        continue-on-error: true
+        run: |
+          cargo build --release \
+            --manifest-path bench/ladder/contenders/chromey/Cargo.toml
 
       - name: Build Go contenders
         run: |

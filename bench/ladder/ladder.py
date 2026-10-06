@@ -71,6 +71,23 @@ FIXTURES = HERE / "fixtures"
 # e.g. {"bt-serve": [], "bt-edge": ["--engine", "chrome", "--chromium", "/path"]}
 BT_ENGINE_ARGS: dict[str, list[str]] = {}
 
+# browser-tool binary per bt-* contender (default $BROWSER_TOOL). The A/B
+# contender `bt-baseline` runs a second build ($BROWSER_TOOL_BASELINE, e.g.
+# master) on the same machine in the same run — the only fair way to judge a
+# perf change, since GitHub runners vary between runs.
+BT_BINARY: dict[str, str] = {}
+
+
+def parse_phases(text: str) -> dict:
+    """browser-tool's `BT_TIMINGS {...}` shutdown line, if present."""
+    for line in text.splitlines():
+        if line.startswith("BT_TIMINGS "):
+            try:
+                return json.loads(line[len("BT_TIMINGS "):])
+            except ValueError:
+                return {}
+    return {}
+
 # Contenders that did not run, with the reason — printed in table.md so a
 # missing row is never silent.
 SKIPPED: dict[str, str] = {}
@@ -85,7 +102,7 @@ NOTES: dict[str, list[str]] = {}
 # (Edge/Brave run under their own binary names, not Chrome's).
 BROWSER_TAGS = {"bt-edge": "msedge", "bt-brave": "brave", "bt-lightpanda": "lightpanda"}
 
-OPTIONAL_SCENARIOS = ("eval", "cold", "realworld", "browse")
+OPTIONAL_SCENARIOS = ("eval", "cold", "realworld", "browse", "agent")
 
 
 def is_bt(name: str) -> bool:
@@ -366,6 +383,7 @@ def run_once(argv, env, timeout_s, chrome_tag=None, detail=None) -> tuple[float,
         raise RuntimeError(f"{argv[:2]} exited {code}\nSTDERR:\n{err}\nSTDOUT:\n{out_tail}")
     own_cpu, reaped_cpu = cpu if cpu else (ru.ru_utime + ru.ru_stime, float("nan"))
     if detail is not None:
+        detail["phases"] = parse_phases(bufs["err"].decode(errors="replace"))
         detail["browser_cpu_s"] = browser.cpu_s
         detail["browser_pss_kb"] = browser.peak_pss_kb
         detail["cpu_reaped_s"] = reaped_cpu
@@ -413,6 +431,7 @@ def bench_session(name: str, argv: list[str], env: dict, out_dir: Path,
             # the node contenders where wall == driver process wall.
             wall, cpu, rss = bst["wall_s"], bst["cpu_s"], bst["maxrss_kb"]
             detail["cpu_reaped_s"] = bst.get("cpu_reaped_s", float("nan"))
+            detail["phases"] = bst.get("phases") or {}
             counts = bst["counts"]
             if os.environ.get("LADDER_PROFILE") == "1":
                 print(out.decode(), flush=True)
@@ -421,6 +440,7 @@ def bench_session(name: str, argv: list[str], env: dict, out_dir: Path,
         runs.append({
             "wall_s": wall, "cpu_s": cpu, "maxrss_kb": rss,
             "cpu_reaped_s": detail.get("cpu_reaped_s", float("nan")),
+            "phases": detail.get("phases") or {},
             "browser_cpu_s": detail.get("browser_cpu_s", float("nan")),
             "browser_pss_kb": detail.get("browser_pss_kb", 0),
             "counts": counts, "extract": str(extract),
@@ -446,14 +466,21 @@ def bench_eval(name: str, argv: list[str], env: dict, out_dir: Path,
         else:
             cmd = argv + ["eval"]
         wall, cpu, rss, out = run_once(cmd, run_env, timeout_s, chrome_tag)
+        engine: list[float] = []
         if is_bt(name):
             with open(stats, encoding="utf-8") as f:
-                lat = json.load(f)["eval_ms"]
+                st = json.load(f)
+            lat = st["eval_ms"]
+            engine = st.get("eval_engine_ms") or []
         else:
             lat = json.loads(out.decode().splitlines()[1])["eval_ms"]
         sessions.append({"mean_ms": sum(lat) / len(lat),
                          "p95_ms": percentile(lat, 0.95),
-                         "wall_s": wall, "n": len(lat)})
+                         "wall_s": wall, "n": len(lat),
+                         # browser-tool's own (engine-side) round trip, without
+                         # the stdin/stdout hop to its client.
+                         **({"engine_mean_ms": sum(engine) / len(engine),
+                             "engine_p95_ms": percentile(engine, 0.95)} if engine else {})})
         print(f"  [eval] {name} rep {rep + 1}/3: "
               f"mean {sum(lat) / len(lat):.2f} ms p95 {percentile(lat, 0.95):.2f} ms",
               flush=True)
@@ -590,20 +617,75 @@ def bench_cold(name: str, argv: list[str], env: dict, chrome_tag: str) -> dict:
     for rep in range(5):
         if is_bt(name):
             # one-shot mode: process start + browser launch + one eval + close
-            cmd = [env["BROWSER_TOOL"], "eval", "--expression", "() => 1 + 1",
-                   *BT_ENGINE_ARGS[name]]
-            # bt-serve (chrome) needs --chromium; variants already carry it
-            if name == "bt-serve":
+            # (bt_serve.py-only args like --browser-tool don't apply here)
+            extra = [a for a in BT_ENGINE_ARGS[name] if a not in ("--browser-tool", BT_BINARY.get(name))]
+            cmd = [BT_BINARY.get(name, env["BROWSER_TOOL"]), "eval", "--expression",
+                   "() => 1 + 1", *extra]
+            # bt-serve / bt-baseline (chrome) need --chromium; variants carry it
+            if name in ("bt-serve", "bt-baseline"):
                 cmd += ["--chromium", env["CHROME_BIN"]]
-            run_env = dict(env)
+            run_env = {**env, "BT_TIMINGS": "1"}
         else:
             cmd = argv + ["cold"]
             run_env = env
-        wall, cpu, rss, _ = run_once(cmd, run_env, 120, chrome_tag)
-        runs.append({"wall_s": wall, "cpu_s": cpu, "maxrss_kb": rss})
+        detail: dict = {}
+        wall, cpu, rss, _ = run_once(cmd, run_env, 120, chrome_tag, detail)
+        runs.append({"wall_s": wall, "cpu_s": cpu, "maxrss_kb": rss,
+                     "phases": detail.get("phases") or {}})
         print(f"  [cold] {name} rep {rep + 1}/5: wall {wall:.2f}s", flush=True)
     best = min(runs, key=lambda r: r["wall_s"])
     return {"runs": runs, "best": best}
+
+
+def kill_agent_daemons() -> None:
+    """agent-browser leaves its daemon idling after `close`; stop it so each
+    rep starts cold like the browser-tool one does."""
+    for pid, (_, name) in proc_table().items():
+        if name.startswith("agent-browser"):
+            try:
+                os.kill(pid, 9)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def bench_agent(tools: dict[str, list[str]], env: dict, out_dir: Path,
+                chrome_tag: str, expected: dict, base_extract: str | None) -> dict:
+    """Agent-style CLI scenario (contenders/cli_agent.py): every step is its own
+    process against a warm background session. Best of 3 by total wall."""
+    results = {}
+    for name, extra in tools.items():
+        runs = []
+        for rep in range(3):
+            kill_stray_chrome(chrome_tag)
+            kill_agent_daemons()
+            extract = out_dir / f"agent-extract-{name}-r{rep}.json"
+            shot = out_dir / f"agent-shot-{name}-r{rep}.png"
+            cmd = [sys.executable, str(CONTENDERS / "cli_agent.py"), *extra,
+                   "--extract-out", str(extract), "--shot-out", str(shot)]
+            try:
+                _, _, _, out = run_once(cmd, env, 300, chrome_tag)
+            except RuntimeError as e:
+                print(f"  [agent] {name} rep {rep + 1}/3: FAILED ({e})", flush=True)
+                runs.append({"ok": False, "error": " ".join(str(e).split())[-400:]})
+                continue
+            doc = json.loads(out.decode().strip().splitlines()[-1])
+            counts = doc["counts"]
+            exp = {"title_a": expected["title_a"], "cards_a": expected["cards_a"],
+                   "visible": expected["visible_after_filter_widget"],
+                   "title_b": expected["title_b"], "rows_b": expected["rows_b"]}
+            ok = counts == exp and (base_extract is None
+                                    or normalized_extract(str(extract)) == base_extract)
+            ops = [s["ms"] for s in doc["steps"] if s["op"] not in ("start", "close")]
+            runs.append({"ok": ok, "wall_s": doc["wall_s"], "steps": doc["steps"],
+                         "op_mean_ms": sum(ops) / len(ops),
+                         "snapshot_bytes": doc["snapshot_bytes"], "counts": counts})
+            print(f"  [agent] {name} rep {rep + 1}/3: wall {doc['wall_s']:.2f}s "
+                  f"op mean {sum(ops) / len(ops):.1f} ms ok={ok}", flush=True)
+        kill_agent_daemons()
+        good = [r for r in runs if r.get("ok")]
+        best = min(good, key=lambda r: r["wall_s"]) if good else (runs[0] if runs else {})
+        results[name] = {"runs": runs, "best": best}
+    return results
 
 
 def normalized_extract(path: str) -> str:
@@ -646,7 +728,7 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def write_publish_json(out_dir: Path, results: dict, contenders: dict,
-                       reps: int, env_text: str) -> None:
+                       reps: int, env_text: str, agent_results: dict | None = None) -> None:
     """Compact, chart-ready results (publish.json): what a results page or a
     remote agent needs, small enough to ship as check-run annotations."""
     def r3(x):
@@ -670,11 +752,19 @@ def write_publish_json(out_dir: Path, results: dict, contenders: dict,
                 "browser_pss_mb": r3(sb["browser_pss_kb"] / 1024),
             },
         }
+        if sb.get("phases"):
+            row["session"]["phases_ms"] = sb["phases"]
         if r.get("eval"):
-            row["eval"] = {"mean_ms": r3(r["eval"]["best"]["mean_ms"]),
-                           "p95_ms": r3(r["eval"]["best"]["p95_ms"])}
+            eb = r["eval"]["best"]
+            row["eval"] = {"mean_ms": r3(eb["mean_ms"]), "p95_ms": r3(eb["p95_ms"])}
+            if "engine_mean_ms" in eb:
+                row["eval"]["engine_mean_ms"] = r3(eb["engine_mean_ms"])
+                row["eval"]["engine_p95_ms"] = r3(eb["engine_p95_ms"])
         if r.get("cold"):
-            row["cold"] = {"wall_s": r3(r["cold"]["best"]["wall_s"])}
+            cb = r["cold"]["best"]
+            row["cold"] = {"wall_s": r3(cb["wall_s"])}
+            if cb.get("phases"):
+                row["cold"]["phases_ms"] = cb["phases"]
         for key in ("realworld", "browse"):
             if r.get(key):
                 b = r[key]["best"]
@@ -694,6 +784,18 @@ def write_publish_json(out_dir: Path, results: dict, contenders: dict,
         "contenders": rows,
         "notes": NOTES,
         "skipped": SKIPPED,
+        "agent_cli": [
+            {"name": name,
+             "ok": bool(r["best"].get("ok")),
+             "wall_s": r3(r["best"].get("wall_s")),
+             "runs_wall_s": [r3(x.get("wall_s")) for x in r["runs"]],
+             "op_mean_ms": r3(r["best"].get("op_mean_ms")),
+             "snapshot_bytes": r["best"].get("snapshot_bytes"),
+             "steps": r["best"].get("steps"),
+             **({"errors": [x["error"] for x in r["runs"] if x.get("error")]}
+                if any(x.get("error") for x in r["runs"]) else {})}
+            for name, r in (agent_results or {}).items()
+        ],
     }
     # indent=1 keeps lines short so annotate.py can chunk it.
     (out_dir / "publish.json").write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
@@ -746,6 +848,7 @@ def main() -> int:
     # Variants are skipped gracefully when their binary is unavailable.
     BT_ENGINES = {
         "bt-serve": ("chrome", "CHROME_BIN"),
+        "bt-baseline": ("chrome", "CHROME_BIN"),
         "bt-edge": ("chrome", "EDGE_BIN"),
         "bt-brave": ("chrome", "BRAVE_BIN"),
         "bt-lightpanda": ("lightpanda", None),
@@ -753,6 +856,15 @@ def main() -> int:
     contenders: dict[str, list[str]] = {}
     bt_engine_args: dict[str, list[str]] = {}
     for bt_name, (engine, bin_env) in BT_ENGINES.items():
+        BT_BINARY[bt_name] = browser_tool
+        if bt_name == "bt-baseline":
+            baseline = os.environ.get("BROWSER_TOOL_BASELINE")
+            if not baseline or not Path(baseline).exists():
+                continue  # A/B only on request; not "skipped"
+            BT_BINARY[bt_name] = baseline
+            contenders[bt_name] = []
+            BT_ENGINE_ARGS[bt_name] = ["--browser-tool", baseline]
+            continue
         if bin_env is not None:
             binary = os.environ.get(bin_env)
             if not binary or not Path(binary).exists():
@@ -790,12 +902,20 @@ def main() -> int:
         "puppeteer": ["node", str(node_dir / "contender_puppeteer.mjs")],
         "chromiumoxide": [str(CONTENDERS / "chromiumoxide" / "target" / "release"
                               / "ladder-chromiumoxide")],
+        "chromey": [str(CONTENDERS / "chromey" / "target" / "release" / "ladder-chromey")],
         "chromedp": [str(CONTENDERS / "chromedp" / "ladder-chromedp")],
         "gorod": [str(CONTENDERS / "gorod" / "ladder-gorod")],
     })
 
     with open(FIXTURES / "expected.json", encoding="utf-8") as f:
         expected = json.load(f)
+
+    # Path-based contenders whose build step failed (optional ones are
+    # continue-on-error) are reported, not fatal.
+    for name, argv in list(contenders.items()):
+        if argv and os.path.isabs(argv[0]) and not Path(argv[0]).exists():
+            SKIPPED[name] = f"binary not built ({argv[0]})"
+            contenders.pop(name)
 
     if only:
         missing = only - set(contenders)
@@ -865,6 +985,26 @@ def main() -> int:
         results[name] = entry
 
     check_correctness(results, expected)
+
+    agent_results: dict = {}
+    if "agent" in scenarios:
+        import shutil
+        tools: dict[str, list[str]] = {}
+        if "bt-serve" in contenders:
+            tools["browser-tool"] = ["--tool", "bt"]
+        # `--only` narrows the main contenders; the agent scenario always
+        # runs every agent CLI that is installed.
+        ab = os.environ.get("AGENT_BROWSER") or shutil.which("agent-browser")
+        if ab:
+            env["AGENT_BROWSER"] = ab
+            tools["agent-browser"] = ["--tool", "ab"]
+        else:
+            SKIPPED["agent-browser"] = "not installed (npm i -g agent-browser)"
+        first = next(iter(results), None)
+        base_extract = (normalized_extract(results[first]["session"]["best"]["extract"])
+                        if first else None)
+        print("== agent-style CLI scenario: " + ", ".join(tools), flush=True)
+        agent_results = bench_agent(tools, env, out_dir, chrome_tag, expected, base_extract)
 
     summary = {
         "contenders": list(contenders),
@@ -961,6 +1101,18 @@ def main() -> int:
         b = results[name]["cold"]["best"]
         lines.append(f"| `{name}` | {b['wall_s']:.2f}s |")
     lines.append("")
+    phase_rows = [(n, results[n]["cold"]["best"].get("phases") or {}) for n in contenders
+                  if results[n].get("cold") and (results[n]["cold"]["best"].get("phases"))]
+    if phase_rows:
+        keys = ["devtools_url", "ws_connect", "browser_up", "first_page", "launch_total", "close"]
+        lines.append("### browser-tool cold-start phases (ms, best run; `BT_TIMINGS`)")
+        lines.append("")
+        lines.append("| contender | " + " | ".join(keys) + " |")
+        lines.append("|---|" + "---|" * len(keys))
+        for name, ph in phase_rows:
+            lines.append(f"| `{name}` | " + " | ".join(
+                f"{ph[k]:.1f}" if isinstance(ph.get(k), (int, float)) else "—" for k in keys) + " |")
+        lines.append("")
     rw_names = [n for n in contenders if results[n].get("realworld")]
     if rw_names:
         lines.append("### real-world: https://example.com goto → title/h1 evals (best of 3)")
@@ -986,6 +1138,19 @@ def main() -> int:
             clicked = (f.get("trending_clicked_url") or "").replace("https://github.com/", "")
             lines.append(f"| `{name}` | {b['wall_s']:.2f}s | {ok} | {top3[:60]} | {clicked[:40]} |")
         lines.append("")
+    if agent_results:
+        lines.append("### agent-style CLI: one process per step against a warm session (best of 3)")
+        lines.append("")
+        lines.append("| tool | total wall | mean per step | snapshot output | gate |")
+        lines.append("|---|---|---|---|---|")
+        for name, r in agent_results.items():
+            b = r["best"]
+            if not b.get("wall_s"):
+                lines.append(f"| `{name}` | failed | — | — | ✗ |")
+                continue
+            lines.append(f"| `{name}` | {b['wall_s']:.2f}s | {b['op_mean_ms']:.1f} ms | "
+                         f"{b['snapshot_bytes'] / 1024:.1f} KB | {'✓' if b['ok'] else '✗'} |")
+        lines.append("")
     if NOTES:
         lines.append("### Notes (experimental contenders)")
         lines.append("")
@@ -1000,7 +1165,7 @@ def main() -> int:
             lines.append(f"- `{name}`: {reason.replace('|', '/')}")
         lines.append("")
     (out_dir / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    write_publish_json(out_dir, results, contenders, args.reps, env_line(""))
+    write_publish_json(out_dir, results, contenders, args.reps, env_line(""), agent_results)
     print("\n".join(lines), flush=True)
 
     server.shutdown()

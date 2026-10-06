@@ -52,13 +52,26 @@ If something you need isn't there, add an annotation for it (see
        -f only=bt-serve,gorod -f scenarios=                        # ~3 min, session gate only
    ```
    `only` takes any contender names (`bt-serve bt-edge bt-brave bt-lightpanda
-   playwright puppeteer chromiumoxide chromedp gorod`); `scenarios` is any of
-   `eval,cold,realworld,browse` (empty = the session gate only).
-3. **One decisive run per hypothesis.** Decide beforehand what output would
+   playwright puppeteer chromiumoxide chromey chromedp gorod`); `scenarios` is
+   any of `eval,cold,realworld,browse,agent` (empty = the session gate only;
+   `agent` = the one-process-per-step CLI scenario, browser-tool vs
+   agent-browser).
+3. **Judge a perf change with an A/B in ONE run.** GitHub runners differ
+   between runs by more than most changes are worth, so never compare
+   numbers across runs. `baseline_ref` builds a second browser-tool from any
+   ref and runs it as `bt-baseline` beside your build on the same machine:
+   ```sh
+   gh workflow run bench.yml --ref my-branch -f reps=3 \
+       -f only=bt-serve,bt-baseline,gorod -f scenarios=eval,cold \
+       -f baseline_ref=master
+   ```
+   Every browser-tool run also reports where its launch time went
+   (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
+4. **One decisive run per hypothesis.** Decide beforehand what output would
    confirm or kill the hypothesis, and make sure that output lands in an
    annotation. If two runs in a row didn't change your mind, stop and re-read
    the code path end to end instead of adding more logging.
-4. Full `reps=3` bench only after CI and a narrow run are green.
+5. Full `reps=3` bench only after CI and a narrow run are green.
 
 ## 4. Root cause before mitigation
 
@@ -78,6 +91,14 @@ If something you need isn't there, add an annotation for it (see
   found by making the gate report *why* it failed.
 - Vendor downloads (Edge, Brave, Lightpanda) flake; their install steps are
   `continue-on-error` and a missing binary shows under "Skipped".
+
+### What A/B runs have already settled (don't redo)
+
+| change | result | run |
+|---|---|---|
+| standard automation flags (go-rod/chromiumoxide set) + `--no-startup-window` + kill-based close | session −23%, cold start −33% | 37410456058 |
+| adopt Chrome's initial tab instead of creating the first page | no gain: first_page −60 ms but ws_connect +70 ms — Chrome's startup is serialized on its UI thread | 37411020717 |
+| current-thread tokio runtime (no cross-thread hops per round trip) | no gain: engine eval 0.458 vs 0.459 ms | 37411391276 |
 
 ## 5. Measurement rules
 
@@ -117,6 +138,7 @@ If something you need isn't there, add an annotation for it (see
 | `src/cdp/` | from-scratch CDP engine (transport, client, browser, page) |
 | `src/protocol.rs` | CLI parsing + JSON-lines protocol + `Driver` |
 | `src/session.rs` | named Unix-socket sessions (`--session`, `start`) |
+| `src/timing.rs` | `BT_TIMINGS=1` phase timings printed at shutdown |
 | `tests/serve_roundtrip.rs` | browser e2e tests (run in CI with real Chrome) |
-| `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/`, `annotate.py` |
+| `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/` (incl. `cli_agent.py` for the agent CLI scenario), `annotate.py` |
 | `.github/workflows/` | `ci.yml` (every push/PR), `bench.yml` (manual dispatch) |

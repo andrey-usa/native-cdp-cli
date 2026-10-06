@@ -107,8 +107,10 @@ pub fn launch_chrome(
         "--user-data-dir={}",
         profile_dir.path().display()
     ))
+    // No start URL: with `--no-startup-window` (see BrowserSession) Chrome
+    // opens no initial tab, so the only renderer started is the session's own
+    // page instead of an extra, never-used about:blank tab.
     .args(chrome_flags)
-    .arg("about:blank")
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     // Pipe stderr: scanned for the DevTools URL, captured for diagnostics, and
@@ -129,7 +131,10 @@ pub fn launch_chrome(
     // Phase 1: scan Chrome's stderr for `DevTools listening on ws://…`. Fast and
     // reliable on Chromium/Chrome/Edge (>= M109).
     let ws_url = loop {
-        if let Some(url) = capture.url() {
+        // Block on the capture thread's announcement (wakes the moment the
+        // line arrives) instead of sleep-polling, which cost up to 20 ms of
+        // every launch.
+        if let Some(url) = capture.wait_url(Duration::from_millis(20)) {
             break Some(url);
         }
         match kill.as_mut().try_wait() {
@@ -151,7 +156,6 @@ pub fn launch_chrome(
         if Instant::now() >= deadline {
             break None;
         }
-        thread::sleep(Duration::from_millis(20));
     };
 
     let ws_url = match ws_url {
@@ -190,28 +194,27 @@ fn extract_devtools_url(line: &str) -> Option<String> {
 /// Chrome prints it, and retains a bounded tail of stderr for diagnostics while
 /// discovery is in progress.
 struct Capture {
-    url: Arc<Mutex<Option<String>>>,
+    url: std::sync::mpsc::Receiver<String>,
     buf: Arc<Mutex<Vec<u8>>>,
     capturing: Arc<AtomicBool>,
 }
 
 impl Capture {
     fn start(stderr: ChildStderr) -> Self {
-        let url = Arc::new(Mutex::new(None));
+        let (url_tx, url) = std::sync::mpsc::channel();
         let buf = Arc::new(Mutex::new(Vec::new()));
         let capturing = Arc::new(AtomicBool::new(true));
-        let url_clone = Arc::clone(&url);
         let buf_clone = Arc::clone(&buf);
         let capturing_clone = Arc::clone(&capturing);
 
             thread::spawn(move || {
                 let reader = std::io::BufReader::new(stderr).lines();
+                let mut announced = false;
                 for line in reader.map_while(Result::ok) {
-                    if let Some(u) = extract_devtools_url(&line) {
-                        if let Ok(mut slot) = url_clone.lock() {
-                            if slot.is_none() {
-                                *slot = Some(u);
-                            }
+                    if !announced {
+                        if let Some(u) = extract_devtools_url(&line) {
+                            announced = true;
+                            let _ = url_tx.send(u);
                         }
                     }
                     if capturing_clone.load(Ordering::Relaxed) {
@@ -237,9 +240,18 @@ impl Capture {
         }
     }
 
-    /// Take the DevTools URL once Chrome has announced it.
-    fn url(&self) -> Option<String> {
-        self.url.lock().expect("capture lock poisoned").take()
+    /// Wait up to `timeout` for Chrome to announce its DevTools URL.
+    fn wait_url(&self, timeout: Duration) -> Option<String> {
+        match self.url.recv_timeout(timeout) {
+            Ok(url) => Some(url),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            // stderr closed without the line: don't spin while the caller
+            // checks the child's exit status.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                thread::sleep(timeout);
+                None
+            }
+        }
     }
 
     /// Last `STDERR_TAIL_BYTES` chars of captured stderr (best-effort).

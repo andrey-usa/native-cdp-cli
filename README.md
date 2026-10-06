@@ -112,6 +112,7 @@ history policy.
 - `src/browser.rs` — `BrowserSession`: engine launch, tab management
 - `src/cdp/` — from-scratch CDP engine (transport, JSON-RPC client, browser, page)
 - `src/session.rs` — named sessions: Unix-socket server, client, detached `start`
+- `src/timing.rs` — `BT_TIMINGS=1`: launch/close phase timings on stderr
 - `src/bin/browser-tool.rs` — the `browser-tool` binary
 - `.claude/skills/browser-tool/SKILL.md` — agent skill (session loop, `ax` refs)
 - `bench/ladder/` — the driver comparison ladder (fixtures, contenders, CI); `publish.json` per run

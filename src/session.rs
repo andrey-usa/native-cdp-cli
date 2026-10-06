@@ -114,6 +114,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
         }
     }
     driver.session().close();
+    crate::timing::report();
     let _ = std::fs::remove_file(&path);
     eprintln!("browser-tool: session {} shut down", path.display());
     ExitCode::SUCCESS

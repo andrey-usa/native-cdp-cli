@@ -263,7 +263,8 @@ fn browser_tool_serve_protocol_roundtrip() {
         missing["error"].as_str().unwrap_or("").contains("within"),
         "a missing element fails with the page's own message: {missing}"
     );
-    assert!(missing["elapsed_ms"].as_u64().unwrap_or(0) < 3000, "{missing}");
+    let elapsed = missing["elapsed_ms"].as_f64().expect("elapsed_ms is a number");
+    assert!(elapsed > 300.0 && elapsed < 3000.0, "waited ~350 ms, then failed: {missing}");
 
     let bye = roundtrip(
         &mut stdin,

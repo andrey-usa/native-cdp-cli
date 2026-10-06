@@ -55,6 +55,18 @@ def zombie_cpu_s(pid: int) -> tuple[float, float] | None:
         return None
 
 
+def read_phases(stderr_path: str) -> dict:
+    """The `BT_TIMINGS {...}` line browser-tool prints at shutdown, if any."""
+    try:
+        with open(stderr_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("BT_TIMINGS "):
+                    return json.loads(line[len("BT_TIMINGS "):])
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 def proc_rss_kb(pid: int) -> int | None:
     """Resident set size in KB for pid, or None."""
     try:
@@ -91,6 +103,8 @@ class Driver:
         # Always request the in-process peak-RSS report: wait4's ru_maxrss
         # is misreported by the kernel when the child has spawned Chrome.
         child_env["BT_RSS_REPORT"] = "1"
+        # Phase timings (launch / first page / close) for the results.
+        child_env["BT_TIMINGS"] = "1"
 
         self.proc = subprocess.Popen(
             argv,
@@ -253,17 +267,22 @@ def run_session(drv: Driver, base: str, extract_out: str, shot_out: str,
     return counts
 
 
-def run_eval_micro(drv: Driver, base: str, n: int) -> list[float]:
+def run_eval_micro(drv: Driver, base: str, n: int) -> tuple[list[float], list[float]]:
+    """(client-side ms incl. the stdin/stdout hop, engine-side ms) per eval.
+
+    Client-side is what a program driving `serve` sees; the engine-side
+    `elapsed_ms` (µs resolution) is browser-tool's own CDP round trip and
+    is the number comparable with in-process drivers like go-rod."""
     drv.cmd({"op": "goto", "url": f"{base}/page_a.html"})
-    lat = []
+    lat, engine = [], []
     for _ in range(n):
-        # Client-side timing (perf_counter): the serve `elapsed_ms` field is
-        # whole-millisecond truncated, too coarse for per-op latency.
         t0 = time.perf_counter()
-        drv.cmd({"op": "eval", "expression": EVAL_TITLE})
+        resp = drv.cmd({"op": "eval", "expression": EVAL_TITLE})
         lat.append((time.perf_counter() - t0) * 1000.0)
+        if isinstance(resp.get("elapsed_ms"), (int, float)):
+            engine.append(float(resp["elapsed_ms"]))
     drv.cmd({"op": "quit"})
-    return lat
+    return lat, engine
 
 
 def run_realworld(drv: Driver) -> dict:
@@ -365,13 +384,16 @@ def main() -> int:
     ap.add_argument("--extract-out", default="")
     ap.add_argument("--shot-out", default="")
     ap.add_argument("--n-eval", type=int, default=200)
+    ap.add_argument("--browser-tool", default="",
+                    help="browser-tool binary (default $BROWSER_TOOL); the ladder's "
+                         "A/B baseline contender passes a second build here")
     ap.add_argument("--engine", default="chrome",
                     help="browser engine: chrome, edge, brave, lightpanda")
     ap.add_argument("--chromium", default="",
                     help="override browser binary path (for edge/brave)")
     args = ap.parse_args()
 
-    browser_tool = os.environ["BROWSER_TOOL"]
+    browser_tool = args.browser_tool or os.environ["BROWSER_TOOL"]
     # CHROME_BIN is only a fallback for the chrome engine. Passing it to
     # `--engine lightpanda` made browser-tool launch `google-chrome serve ...`
     # as if it were lightpanda (its --chromium flag doubles as the lightpanda
@@ -386,6 +408,7 @@ def main() -> int:
     print("PYTHON: driver created", file=sys.stderr, flush=True)
     run_error = None
     realworld: dict = {}
+    eval_engine_ms: list[float] = []
     try:
         if args.mode == "session":
             counts = run_session(drv, base, args.extract_out, args.shot_out,
@@ -404,7 +427,7 @@ def main() -> int:
             print("PYTHON: run_browse completed", file=sys.stderr, flush=True)
         else:
             counts = {}
-            eval_ms = run_eval_micro(drv, base, args.n_eval)
+            eval_ms, eval_engine_ms = run_eval_micro(drv, base, args.n_eval)
             print("PYTHON: run_eval_micro completed", file=sys.stderr, flush=True)
     except Exception as e:
         run_error = e
@@ -430,6 +453,8 @@ def main() -> int:
         "maxrss_kb": maxrss,
         "counts": counts,
         "eval_ms": eval_ms,
+        "eval_engine_ms": eval_engine_ms,
+        "phases": read_phases(drv._stderr_file.name),
         "realworld": realworld,
     }
     with open(args.stats_out, "w", encoding="utf-8") as f:

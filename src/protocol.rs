@@ -157,7 +157,8 @@ pub struct Response {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    pub elapsed_ms: u128,
+    /// Server-side time for the op, in milliseconds with µs resolution.
+    pub elapsed_ms: f64,
 }
 
 /// Launch/session settings shared by one-shot and serve mode.
@@ -846,8 +847,13 @@ fn ok_response(id: Value, result: Value, started: Instant) -> Response {
         ok: true,
         result: Some(result),
         error: None,
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms: elapsed_ms(started),
     }
+}
+
+/// Elapsed milliseconds, rounded to the microsecond.
+fn elapsed_ms(started: Instant) -> f64 {
+    (started.elapsed().as_secs_f64() * 1_000_000.0).round() / 1000.0
 }
 
 fn err_response(id: Value, error: String, started: Instant) -> Response {
@@ -856,7 +862,7 @@ fn err_response(id: Value, error: String, started: Instant) -> Response {
         ok: false,
         result: None,
         error: Some(error),
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms: elapsed_ms(started),
     }
 }
 
@@ -915,6 +921,7 @@ pub fn serve(
         }
         if is_quit {
             driver.session().close();
+            crate::timing::report();
             if std::env::var("BT_RSS_REPORT").is_ok() {
                 eprintln!("[browser-tool] peak RSS at quit: {:?} KB", peak_rss_kb());
             }
@@ -923,6 +930,7 @@ pub fn serve(
     }
     // EOF: shut the session down cleanly.
     driver.session().close();
+    crate::timing::report();
     eprintln!("browser-tool: stdin closed, session shut down");
     if std::env::var("BT_RSS_REPORT").is_ok() {
         eprintln!("[browser-tool] peak RSS at EOF-shutdown: {:?} KB", peak_rss_kb());
@@ -949,6 +957,7 @@ pub fn oneshot(
         Err(e) => err_response(Value::Null, format!("{e:#}"), started),
     };
     driver.session().close();
+    crate::timing::report();
     let ok = response.ok;
     if write_response(output, &response, config.pretty).is_err() {
         return ExitCode::from(1);

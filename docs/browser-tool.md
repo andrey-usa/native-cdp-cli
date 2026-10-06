@@ -94,7 +94,9 @@ browser-tool screenshot --path shot.png --full-page
 ```
 
 Global flags (`--engine`, `--headed`, `--chromium`, `--timeout-ms`,
-`--pretty`) work before *or* after the command. Exit code 0 on `ok:true`,
+`--pretty`) work before *or* after the command. Set `BT_TIMINGS=1` to get a
+`BT_TIMINGS {"devtools_url": ms, "ws_connect": ms, "first_page": ms,
+"close": ms, …}` line on stderr at shutdown (where launch time goes). Exit code 0 on `ok:true`,
 1 on a failed op, 2 on bad arguments. Use **serve mode** for anything more
 than one action — it pays the ~1 s browser launch once instead of per command.
 

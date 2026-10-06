@@ -29,6 +29,9 @@ pub struct Browser {
     handle: tokio::runtime::Handle,
     client: CdpClient,
     child: Mutex<Option<Child>>,
+    /// The child leads its own process group (lightpanda, possibly under
+    /// xvfb-run): close kills the whole group, not just the wrapper.
+    kill_group: bool,
     /// Kept alive for the session; the temp profile is deleted on drop.
     /// `None` for engines that need no profile (Lightpanda).
     _profile_dir: Option<tempfile::TempDir>,
@@ -78,7 +81,13 @@ impl Browser {
         let log_path = std::env::temp_dir().join(format!("lightpanda-serve-{port}.log"));
         let log_file = std::fs::File::create(&log_path).ok();
         let log_file_err = log_file.as_ref().and_then(|f| f.try_clone().ok());
-        let mut child = std::process::Command::new(&program)
+        let mut cmd = std::process::Command::new(&program);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(log_file.map(std::process::Stdio::from).unwrap_or(std::process::Stdio::null()))
@@ -104,15 +113,14 @@ impl Browser {
             }
         };
         eprintln!("[browser] lightpanda serve on 127.0.0.1:{port} -> {ws_url}");
-        eprintln!("[browser] connecting CDP websocket...");
         let client = handle
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect to lightpanda")?;
-        eprintln!("[browser] CDP websocket connected");
         Ok(Self {
             handle: handle.clone(),
             client,
             child: Mutex::new(Some(child)),
+            kill_group: cfg!(unix),
             _profile_dir: None,
             ws_url,
         })
@@ -120,6 +128,7 @@ impl Browser {
 
     /// Launch the engine and connect the browser-level CDP session.
     pub fn launch(handle: &tokio::runtime::Handle, opts: &LaunchOptions) -> Result<Self> {
+        let started = std::time::Instant::now();
         let LaunchedChrome {
             child,
             profile_dir,
@@ -127,13 +136,17 @@ impl Browser {
             ..
         } = transport::launch_chrome(&opts.exe, opts.headless, &opts.chrome_flags, opts.debugging_port)
             .context("launch chrome")?;
+        crate::timing::record("devtools_url", started);
+        let connect_started = std::time::Instant::now();
         let client = handle
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect")?;
+        crate::timing::record("ws_connect", connect_started);
         Ok(Self {
             handle: handle.clone(),
             client,
             child: Mutex::new(Some(child)),
+            kill_group: false,
             _profile_dir: Some(profile_dir),
             ws_url,
         })
@@ -152,7 +165,6 @@ impl Browser {
     /// per connection (one context + one page per process).
     pub fn new_page_lightpanda(&self, url: Option<&str>) -> Result<Page> {
         self.block_on(async {
-            eprintln!("[browser] sending Target.createBrowserContext...");
             let ctx = self
                 .client
                 .send(
@@ -163,7 +175,6 @@ impl Browser {
                 )
                 .await
                 .context("Target.createBrowserContext")?;
-            eprintln!("[browser] got browser context");
             let browser_context_id = ctx
                 .get("browserContextId")
                 .and_then(Value::as_str)
@@ -296,52 +307,36 @@ impl Browser {
         })
     }
 
-    /// Shut the browser down gracefully (like chromiumoxide): send the
-    /// `Browser.close` CDP command, then reap the child. Falls back to
-    /// killing the child if the graceful close fails or times out.
+    /// Shut the browser down: kill it and reap it.
+    ///
+    /// The profile is a throwaway temp dir, so Chrome's graceful shutdown
+    /// (flushing prefs, history, caches) saves nothing we keep — it only
+    /// costs time: browser-tool used to send `Browser.close` and wait up to
+    /// 500 ms for the process to exit, which every session and cold start
+    /// paid. go-rod (leakless) and chromiumoxide (kill-on-drop) don't wait
+    /// for it either. Renderer and helper processes exit on their own once
+    /// the browser process is gone.
     pub fn close(&self) {
-        // Graceful: ask Chrome to shut itself down via CDP.
-        let _ = self.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.client.send(
-                    "Browser.close",
-                    serde_json::json!({}),
-                    None,
-                    std::time::Duration::from_secs(5),
-                ),
-            )
-            .await
-        });
-        // Reap the child; kill if it's still alive after the graceful close.
-        if let Ok(mut child) = self.child.lock() {
-            if let Some(mut child) = child.take() {
-                // Poll for exit instead of sleeping unconditionally: Chrome
-                // usually exits within ~50ms of Browser.close; the old fixed
-                // 500ms sleep added half a second to every cold start.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        _ => {
-                            if std::time::Instant::now() >= deadline {
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        }
+        let started = std::time::Instant::now();
+        self.client.shutdown();
+        if let Ok(mut slot) = self.child.lock() {
+            if let Some(mut child) = slot.take() {
+                #[cfg(unix)]
+                if self.kill_group {
+                    // Negative pid = the whole process group (wrapper and all).
+                    extern "C" {
+                        fn kill(pid: i32, sig: i32) -> i32;
+                    }
+                    // SAFETY: plain syscall; the group was created at spawn.
+                    unsafe {
+                        kill(-(child.id() as i32), 9);
                     }
                 }
-                match child.try_wait() {
-                    Ok(Some(_)) => {
-                        let _ = child.wait();
-                    }
-                    _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
+        crate::timing::record("close", started);
     }
 }
 
