@@ -372,19 +372,74 @@ fn killed_session_server_takes_its_browser_down() {
         .into_iter()
         .find(|pid| comm(*pid).is_some_and(|c| c.contains("chrom") || c.contains("headless")))
         .expect("the session's browser process");
+    // Chromium rewrites its command line into one space-joined string.
+    let cmdline = String::from_utf8_lossy(&std::fs::read(format!("/proc/{browser}/cmdline")).unwrap_or_default())
+        .replace('\0', " ");
+    let profile = cmdline
+        .split(" --")
+        .find_map(|a| a.strip_prefix("user-data-dir="))
+        .map(|p| std::path::PathBuf::from(p.trim()))
+        .expect("--user-data-dir on the browser's command line");
+    assert!(profile.exists(), "{}", profile.display());
     let _ = Command::new("kill").args(["-9", &server.to_string()]).status();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+    loop {
         let state = std::fs::read_to_string(format!("/proc/{browser}/stat")).unwrap_or_default();
         let gone = state.is_empty() || state.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('Z'));
         if gone {
             let _ = std::fs::remove_file(&s.name);
-            return;
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = Command::new("kill").args(["-9", &browser.to_string()]).status();
+            panic!("browser {browser} outlived its killed session server by 5 s");
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = Command::new("kill").args(["-9", &browser.to_string()]).status();
-    panic!("browser {browser} outlived its killed session server by 5 s");
+    // The killed server never deleted its profile (it may sit in RAM, in
+    // /dev/shm). Its browser shuts down on its own; once every process of
+    // the browser's group (it leads one) is gone, the next launch sweeps
+    // the profile (a test running in parallel may launch first and sweep
+    // it already).
+    let owner = std::fs::read_to_string(profile.join(".navigera-owner")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !group_members(browser).is_empty() {
+        assert!(Instant::now() < deadline, "browser group {browser} still has {:?}", group_members(browser));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = Command::new(tool_exe())
+        .args(["eval", "--expression", "() => 1"])
+        .env("BT_VERBOSE", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("one-shot eval");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let left: Vec<String> = std::fs::read_dir(&profile)
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    assert!(
+        !profile.exists(),
+        "the orphaned profile is swept: {} (owner record {owner:?}, server {server}: {:?}, left: {left:?}, one-shot stderr: {})",
+        profile.display(),
+        std::fs::read_to_string(format!("/proc/{server}/stat")).ok(),
+        String::from_utf8_lossy(&out.stderr).lines().filter(|l| l.contains("[profile]")).collect::<Vec<_>>().join(" | "),
+    );
+}
+
+/// Live (non-zombie) processes in process group `pgid`.
+#[cfg(target_os = "linux")]
+fn group_members(pgid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let Some((_, rest)) = stat.rsplit_once(") ") else { continue };
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if fields.len() > 2 && !fields[0].starts_with('Z') && fields[2] == pgid.to_string() {
+            out.push(pid);
+        }
+    }
+    out
 }
 
 /// Windows has no pipe transport here: Chrome runs in a kill-on-close job

@@ -87,10 +87,7 @@ pub fn launch_chrome(
     chrome_flags: &[String],
     debugging_port: Option<u16>,
 ) -> Result<LaunchedChrome> {
-    let profile_dir = tempfile::Builder::new()
-        .prefix("cdp-cli-profile-")
-        .tempdir()
-        .context("create chrome profile dir")?;
+    let profile_dir = super::profile::temp_profile()?;
 
     let mut cmd = Command::new(exe);
     if headless {
@@ -120,7 +117,9 @@ pub fn launch_chrome(
     // `navigera` error reporting that lives on our stderr.
     .stderr(Stdio::piped());
 
+    own_process_group(&mut cmd);
     let mut child = cmd.spawn().context("spawn chrome")?;
+    super::profile::record_browser(&profile_dir, child.id());
     // Before Chrome starts its own children, so they land in the job too.
     let job = super::procjob::ProcJob::contain(&child);
     let stderr = child
@@ -240,10 +239,7 @@ pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) ->
     // dup2'd 3 and 4 (which never carry O_CLOEXEC) reach Chrome.
     const F_DUPFD_CLOEXEC: i32 = if cfg!(target_os = "linux") { 1030 } else { 67 };
 
-    let profile_dir = tempfile::Builder::new()
-        .prefix("cdp-cli-profile-")
-        .tempdir()
-        .context("create chrome profile dir")?;
+    let profile_dir = super::profile::temp_profile()?;
     // Chrome reads commands from fd 3 and writes to fd 4.
     let (cmd_read, cmd_write) = std::io::pipe().context("pipe for CDP commands")?;
     let (reply_read, reply_write) = std::io::pipe().context("pipe for CDP replies")?;
@@ -276,7 +272,9 @@ pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) ->
             Ok(())
         });
     }
+    own_process_group(&mut cmd);
     let mut child = cmd.spawn().with_context(|| format!("spawn {exe} --remote-debugging-pipe"))?;
+    super::profile::record_browser(&profile_dir, child.id());
     // The child's ends live on in Chrome; close ours so EOF propagates.
     drop(cmd_read);
     drop(reply_write);
@@ -292,6 +290,22 @@ pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) ->
         to_browser: OwnedFd::from(cmd_write),
         stderr,
     })
+}
+
+/// Unix: the browser leads a process group of its own, which every helper
+/// it starts (zygotes, renderers, GPU, network and storage services)
+/// inherits, so `close` kills the whole tree with one signal. Killing only
+/// the browser process left the network and storage services alive for a
+/// few ms, writing `Default/Reporting and NEL` and friends into a profile
+/// that was being deleted (3 leaked profile dirs in 24 local cold runs).
+fn own_process_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
 }
 
 /// `BT_CHROME_LOG=<file>`: append the browser's own stderr there (crash

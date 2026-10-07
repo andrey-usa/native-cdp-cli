@@ -34,12 +34,13 @@ pub struct Browser {
     handle: tokio::runtime::Handle,
     client: CdpClient,
     child: Mutex<Option<Child>>,
-    /// The child leads its own process group (lightpanda, possibly under
-    /// xvfb-run): close kills the whole group, not just the wrapper.
+    /// The child leads its own process group (every browser we launch on
+    /// Unix; lightpanda possibly under xvfb-run): close kills the whole
+    /// group, not just the browser process or the wrapper.
     kill_group: bool,
-    /// Kept alive for the session; the temp profile is deleted on drop.
-    /// `None` for engines that need no profile (Lightpanda).
-    _profile_dir: Option<tempfile::TempDir>,
+    /// Kept alive for the session; the temp profile is deleted by `close`
+    /// (or on drop). `None` for engines that need no profile (Lightpanda).
+    profile_dir: Mutex<Option<tempfile::TempDir>>,
     ws_url: String,
     /// Chrome's stderr tail (pipe launches), for "why did it die" errors.
     stderr: Option<transport::StderrTail>,
@@ -135,7 +136,7 @@ impl Browser {
             client,
             child: Mutex::new(Some(child)),
             kill_group: cfg!(unix),
-            _profile_dir: None,
+            profile_dir: Mutex::new(None),
             ws_url,
             stderr: None,
             shared,
@@ -213,9 +214,11 @@ impl Browser {
         Self {
             handle: handle.clone(),
             client,
+            // Launched browsers lead their own process group (see
+            // `transport::own_process_group`); attached ones have no child.
+            kill_group: cfg!(unix) && child.is_some(),
             child: Mutex::new(child),
-            kill_group: false,
-            _profile_dir: profile_dir,
+            profile_dir: Mutex::new(profile_dir),
             ws_url,
             shared,
             stderr: None,
@@ -497,7 +500,7 @@ impl Browser {
         }
     }
 
-    /// Shut the browser down: kill it and reap it.
+    /// Shut the browser down: kill it, delete its profile, reap it.
     ///
     /// The profile is a throwaway temp dir, so Chrome's graceful shutdown
     /// (flushing prefs, history, caches) saves nothing we keep — it only
@@ -506,31 +509,52 @@ impl Browser {
     /// paid. go-rod (leakless) and chromiumoxide (kill-on-drop) don't wait
     /// for it either. Renderer and helper processes exit on their own once
     /// the browser process is gone.
+    ///
+    /// On Unix nothing here waits for the kernel to tear the killed browser
+    /// down (~20 ms for Chrome): SIGKILL can't be ignored, the profile is
+    /// deleted meanwhile (unlinking files a dying process still holds is
+    /// fine, and a removed directory takes no new entries), and the zombie
+    /// is reaped on a background thread — or by init once we exit. Only if
+    /// the delete fails (a file appeared mid-walk) do we wait and retry.
+    /// Windows can't delete files a process still holds open, so there the
+    /// browser is reaped first.
     pub fn close(&self) {
         let started = std::time::Instant::now();
         self.client.shutdown();
-        if let Ok(mut slot) = self.child.lock() {
-            if let Some(mut child) = slot.take() {
-                if self.kill_group {
-                    // Negative pid = the whole process group (wrapper and all).
-                    #[cfg(unix)]
-                    {
-                        extern "C" {
-                            fn kill(pid: i32, sig: i32) -> i32;
-                        }
-                        // SAFETY: plain syscall; the group was created at spawn.
-                        unsafe {
-                            kill(-(child.id() as i32), 9);
-                        }
-                    }
+        let profile = self.profile_dir.lock().ok().and_then(|mut slot| slot.take());
+        let Some(mut child) = self.child.lock().ok().and_then(|mut slot| slot.take()) else {
+            drop(profile);
+            crate::timing::record("close", started);
+            return;
+        };
+        if self.kill_group {
+            // Negative pid = the whole process group (wrapper and all).
+            #[cfg(unix)]
+            {
+                extern "C" {
+                    fn kill(pid: i32, sig: i32) -> i32;
                 }
-                if let Some(job) = &self.job {
-                    job.terminate();
+                // SAFETY: plain syscall; the group was created at spawn.
+                unsafe {
+                    kill(-(child.id() as i32), 9);
                 }
-                let _ = child.kill();
-                let _ = child.wait();
             }
         }
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+        let _ = child.kill();
+        let deleted = cfg!(unix)
+            && profile.as_ref().is_none_or(|p| std::fs::remove_dir_all(p.path()).is_ok());
+        if deleted {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        } else {
+            let _ = child.wait();
+        }
+        // Deletes the profile if it is still there (a no-op otherwise).
+        drop(profile);
         crate::timing::record("close", started);
     }
 }

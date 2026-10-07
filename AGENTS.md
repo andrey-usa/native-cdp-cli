@@ -175,6 +175,7 @@ If something you need isn't there, add an annotation for it (see
 | new ops, dialog/popup/navigation tracking, text `ax` | no session cost: 0.65 → 0.66 s vs master | 37465364738 |
 | `Network.enable` per tab + `ax`/`screenshot` wait for in-flight fetch/XHR (500 ms quiet, ≤3 s) | no session cost: 0.51 vs 0.49 s, cold 0.23 s both | 37619224427 |
 | that wait + skill line "chain sure steps, end with `ax`" (agent eval, purchase+account ×2) | median turns 18 → 10, tokens 288K → 167K, 4/4 both | 37619227942 vs 37619231246 |
+| throwaway profile on tmpfs (`/dev/shm`; Chrome makes ~210 `fdatasync` calls per cold start) + kill the browser's whole process group + delete the profile while Chrome dies, reap in the background (`src/cdp/profile.rs`, `Browser::close`; `BT_PROFILE_DIR=<dir>` puts the profile elsewhere) | cold 0.26 → 0.24 s (gorod 0.27), session 0.57 → 0.53 s, close 18 → 2 ms; launch itself unchanged on the runner's disk (locally, on a slower disk: cold 288 → 234 ms) | 37690824030 |
 
 ## 5. Measurement rules
 

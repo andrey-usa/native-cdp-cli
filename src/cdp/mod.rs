@@ -5,8 +5,9 @@
 //!   in ONE round trip (no evaluate + callFunctionOn + releaseObject dance).
 //! * A tiny tokio runtime (2 workers) owned by the engine — no framework
 //!   machinery, no background tasks beyond the single socket pump.
-//! * Boring, direct teardown: `Browser.close`, wait for the child, kill it.
-//!   No close lifecycles, no nested runtimes, nothing to spin.
+//! * Boring, direct teardown: SIGKILL the browser's process group, delete
+//!   the throwaway profile (on tmpfs where possible, see `profile`), reap
+//!   in the background. No close lifecycles, no nested runtimes.
 //! * Synchronous public facade: the CLI stays simple, `block_on` per call.
 //!
 //! Layout: `transport` launches Chrome and finds the DevTools endpoint,
@@ -20,6 +21,7 @@ mod client;
 mod events;
 mod page;
 mod procjob;
+mod profile;
 mod transport;
 
 pub use browser::{Browser, LaunchOptions};
