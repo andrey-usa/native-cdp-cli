@@ -359,7 +359,8 @@ pub struct SessionConfig {
     pub pretty: bool,
     /// Print only the result (strings raw), errors as `error: …` on stderr.
     pub raw: bool,
-    /// CDP transport: `pipe` (default) or `ws` (DevTools port).
+    /// CDP transport: `pipe` (default on Linux/macOS) or `ws` (DevTools
+    /// port; the default on Windows).
     pub transport: Option<String>,
     /// Named background session (`--session <name|socket path>`): `serve`
     /// listens on it, `start` spawns that server detached, and every other
@@ -463,11 +464,11 @@ pub fn usage(program: &str) -> String {
     }
     out.push_str(&format!(
         "\nGLOBAL FLAGS (before or after the command):\n  \
-         --session <name>       warm browser behind a Unix socket ($BROWSER_TOOL_SESSION)\n  \
+         --session <name>       warm browser behind a local socket ($BROWSER_TOOL_SESSION)\n  \
          --raw                  print only the result (strings unquoted); errors on stderr\n  \
          --timeout-ms <ms>      navigation/command timeout (default {DEFAULT_TIMEOUT_MS}); per op: element wait (default 5000)\n  \
          --chromium <path>      browser binary ($CHROME_BIN); --engine lightpanda; --headed\n  \
-         --transport ws         CDP over a DevTools port instead of a private pipe (to attach DevTools)\n  \
+         --transport ws         CDP over a DevTools port instead of a private pipe (to attach DevTools; Windows default)\n  \
          --idle-timeout-s <s>   session server idle shutdown (default {DEFAULT_IDLE_TIMEOUT_S}, 0 = never)\n  \
          --pretty               pretty-print JSON\n\n\
          Output: one JSON object per command, {{\"ok\":true,\"result\":…}} or {{\"ok\":false,\"error\":…}}; exit 1 on error.\n\

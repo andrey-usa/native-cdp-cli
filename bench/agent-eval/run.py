@@ -37,6 +37,14 @@ import time
 import urllib.request
 from pathlib import Path
 
+WINDOWS = os.name == "nt"
+OS_NAME = {"nt": "windows"}.get(os.name, "darwin" if sys.platform == "darwin" else "linux")
+
+if WINDOWS and not sys.flags.utf8_mode and __name__ == "__main__":
+    # Model output, tables (✓ ✗ ⚠) and JSON are UTF-8; Windows' default
+    # code page would fail on them in pipes and files.
+    sys.exit(subprocess.run([sys.executable, "-X", "utf8", *sys.argv]).returncode)
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 SITE = REPO / "bench" / "site" / "server.py"
@@ -80,7 +88,12 @@ FINAL ANSWER: <answer>"""
 PASS_ENV = ["CHROME_BIN", "RUSTUP_HOME", "CARGO_HOME", "NPM_CONFIG_PREFIX",
             "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_ARGS",
             "PLAYWRIGHT_MCP_EXECUTABLE_PATH", "PLAYWRIGHT_MCP_SANDBOX",
-            "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "DO_NOT_TRACK", "DISABLE_TELEMETRY", "CI"]
+            "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "DO_NOT_TRACK", "DISABLE_TELEMETRY", "CI",
+            # Windows: what a desktop session has (npm, Node and PowerShell
+            # look things up there; Gemini CLI keeps only TEMP/USERPROFILE/…).
+            "APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+            "ProgramData", "HOMEDRIVE", "HOMEPATH", "USERNAME", "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE", "OS"]
 
 # Models Gemini CLI calls for its own helper work (loop detection, web fetch:
 # the `gemini-3-flash-base` alias). Seen in healthy runs; any other model in
@@ -141,9 +154,16 @@ class Site:
 
 # --- workspace --------------------------------------------------------------
 
+def exe(name: str, env: dict | None = None) -> str:
+    """Full path of a command on the run's PATH. Windows needs it: process
+    creation searches the parent's PATH, not the child env's, and npm tools
+    are `.cmd` shims that only a PATHEXT-aware lookup finds."""
+    return shutil.which(name, path=(env or os.environ).get("PATH")) or name
+
+
 def npm_root() -> str:
     try:
-        return subprocess.run(["npm", "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
+        return subprocess.run([exe("npm"), "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
     except Exception:
         return ""
 
@@ -159,24 +179,28 @@ def prepare(tool: str, mode: str, root: Path, args) -> tuple[Path, dict]:
     (home / ".gemini" / "settings.json").write_text(json.dumps(settings, indent=1))
 
     chrome = os.environ["CHROME_BIN"]
-    real_home = os.environ.get("HOME", "/root")
     env = {
         **os.environ,
         "HOME": str(home), "GEMINI_CLI_HOME": str(home), "GEMINI_CLI_TRUST_WORKSPACE": "true",
         # Toolchains stay where the runner installed them.
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", f"{real_home}/.rustup"),
+        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup"),
         "CHROME_BIN": chrome,
         "AGENT_BROWSER_EXECUTABLE_PATH": chrome, "AGENT_BROWSER_ARGS": "--no-sandbox",
         "PLAYWRIGHT_MCP_EXECUTABLE_PATH": chrome, "PLAYWRIGHT_MCP_SANDBOX": "false",
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
         "DO_NOT_TRACK": "1", "DISABLE_TELEMETRY": "1", "CI": "true",
     }
+    if WINDOWS:
+        # A temp dir per run: tool daemons' sockets and browser profiles
+        # land under the run's root, so cleanup can find them by path.
+        (root / "tmp").mkdir()
+        env["TEMP"] = env["TMP"] = str(root / "tmp")
     if mode == "onboard":
         # Whatever the agent installs lands in this run's own prefix.
         prefix = home / ".npm-global"
         env["NPM_CONFIG_PREFIX"] = str(prefix)
         env["CARGO_HOME"] = str(home / ".cargo")
-        env["PATH"] = os.pathsep.join([str(prefix / "bin"), str(home / ".cargo" / "bin"),
+        env["PATH"] = os.pathsep.join([str(prefix if WINDOWS else prefix / "bin"), str(home / ".cargo" / "bin"),
                                        str(home / ".local" / "bin"), env.get("PATH", "")])
         if args.bt_bin_dir:
             env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
@@ -188,13 +212,13 @@ def prepare(tool: str, mode: str, root: Path, args) -> tuple[Path, dict]:
     if tool == "browser-tool":
         if args.bt_bin_dir:
             env["PATH"] = os.pathsep.join([args.bt_bin_dir, env.get("PATH", "")])
-        subprocess.run(["browser-tool", "install-skill", "--dir", str(skills)], env=env, check=True,
+        subprocess.run([exe("browser-tool", env), "install-skill", "--dir", str(skills)], env=env, check=True,
                        capture_output=True)
     elif tool == "agent-browser":
         src = Path(npm_root()) / "agent-browser" / "skills" / "agent-browser"
         shutil.copytree(src, skills / "agent-browser")
     elif tool == "playwright-cli":
-        subprocess.run(["playwright-cli", "install", "--skills=agents"], cwd=work, env=env,
+        subprocess.run([exe("playwright-cli", env), "install", "--skills=agents"], cwd=work, env=env,
                        capture_output=True, timeout=300)
         if not (skills / "playwright-cli" / "SKILL.md").exists():
             raise RuntimeError("playwright-cli install --skills=agents wrote no skill")
@@ -207,17 +231,34 @@ def prepare(tool: str, mode: str, root: Path, args) -> tuple[Path, dict]:
 
 # --- agents -----------------------------------------------------------------
 
+def gemini_argv(gemini: str) -> list[str]:
+    """How to start Gemini CLI. `--gemini` may name its JS entry point: on
+    Windows the npm `.cmd` shim runs through cmd.exe, which cuts a
+    multi-line `-p` prompt at the first newline."""
+    if gemini.endswith((".js", ".mjs")):
+        return [exe("node"), gemini]
+    return [exe(gemini)]
+
+
+def kill_tree(proc: subprocess.Popen):
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
-    cmd = [args.gemini, "-p", prompt, "-m", args.model, "--approval-mode=yolo",
+    cmd = [*gemini_argv(args.gemini), "-p", prompt, "-m", args.model, "--approval-mode=yolo",
            "--skip-trust", "-o", "stream-json"]
     started = time.time()
+    group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
     proc = subprocess.Popen(cmd, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True)
+                            text=True, encoding="utf-8", errors="replace", **group)
     try:
         out, err = proc.communicate(timeout=args.run_timeout)
         timed_out = False
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        kill_tree(proc)
         out, err = proc.communicate()
         timed_out = True
     wall = time.time() - started
@@ -314,7 +355,8 @@ def run_scripted(task: str, base: str, work: Path, env: dict) -> dict:
     started = time.time()
     shells, outputs = [], []
     for argv in scripted_plan(task, base):
-        p = subprocess.run(["browser-tool", *argv], cwd=work, env=env, capture_output=True, text=True, timeout=120)
+        p = subprocess.run([exe("browser-tool", env), *argv], cwd=work, env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120)
         shells.append("browser-tool " + " ".join(argv))
         outputs.append(p.stdout)
         if p.returncode != 0:
@@ -325,6 +367,34 @@ def run_scripted(task: str, base: str, work: Path, env: dict) -> dict:
     return {"exit": 0, "timed_out": False, "wall_s": round(time.time() - started, 1),
             "text": "FINAL ANSWER: " + " ".join(last.split())[-600:], "shell_commands": shells,
             "tools_used": ["run_shell_command"] * len(shells), "requests": 0, "errors": []}
+
+
+TOOL_PATTERNS = ("agent-browser", "playwright-cli", "cli-daemon", "browser-tool")
+
+# Windows has no pkill -f: match command lines through CIM, skip this
+# harness and its ancestors (their command lines name the tools too).
+WIN_CLEANUP = r"""
+$keep = @{}; $p = $PID
+while ($p) { $keep[[int]$p] = 1; $p = (Get-CimInstance Win32_Process -Filter "ProcessId=$p").ParentProcessId }
+foreach ($x in $env:KEEP_PIDS -split ',') { if ($x) { $keep[[int]$x] = 1 } }
+Get-CimInstance Win32_Process | Where-Object {
+  -not $keep[[int]$_.ProcessId] -and $_.CommandLine -and (
+    $_.CommandLine -like "*$env:RUN_ROOT*" -or
+    $_.Name -in @('browser-tool.exe', 'agent-browser.exe') -or
+    ($_.Name -eq 'node.exe' -and ($_.CommandLine -match 'playwright-cli|cli-daemon|agent-browser')))
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+"""
+
+
+def cleanup(root: Path):
+    """Each tool's own daemon/browser must not leak into the next run."""
+    if WINDOWS:
+        env = {**os.environ, "RUN_ROOT": root.name, "KEEP_PIDS": str(os.getpid())}
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", WIN_CLEANUP],
+                       env=env, capture_output=True, timeout=120)
+        return
+    for pat in TOOL_PATTERNS:
+        subprocess.run(["pkill", "-f", f"{pat}.*{root.name}"], capture_output=True)
 
 
 # --- checks -----------------------------------------------------------------
@@ -402,8 +472,14 @@ def smoke(args) -> int:
     return 0
 
 
+def label(run: dict) -> str:
+    """Row name: the tool, plus the OS when it isn't Linux."""
+    return run["tool"] + (f" ({run['os']})" if run.get("os", "linux") != "linux" else "")
+
+
 def render(mode: str, agent: str, model: str, runs: list, tools: list, tasks: list) -> tuple[str, list]:
-    """Markdown table (per tool, then per task) and the per-tool summary."""
+    """Markdown table (per tool, then per task) and the per-tool summary.
+    `tools` are row labels (see `label`)."""
     def med(xs):
         xs = [x for x in xs if isinstance(x, (int, float))]
         return statistics.median(xs) if xs else None
@@ -413,8 +489,8 @@ def render(mode: str, agent: str, model: str, runs: list, tools: list, tasks: li
              "|---|---|---|---|---|---|---|"]
     summary = []
     for tool in tools:
-        rs = [r for r in runs if r["tool"] == tool and not r.get("infra")]
-        infra_n = sum(1 for r in runs if r["tool"] == tool and r.get("infra"))
+        rs = [r for r in runs if label(r) == tool and not r.get("infra")]
+        infra_n = sum(1 for r in runs if label(r) == tool and r.get("infra"))
         passed = sum(1 for r in rs if r["ok"])
         row = {"tool": tool, "passed": passed, "runs": len(rs), "infra": infra_n,
                "median_requests": med([r.get("requests") for r in rs]),
@@ -431,7 +507,7 @@ def render(mode: str, agent: str, model: str, runs: list, tools: list, tasks: li
     for task in tasks:
         cells = []
         for tool in tools:
-            rs = [r for r in runs if r["tool"] == tool and r["task"] == task]
+            rs = [r for r in runs if label(r) == tool and r["task"] == task]
             cells.append(" ".join(
                 ("⚠" if r.get("infra") else "✓" if r["ok"] else "✗")
                 + (f" {r['tokens_total'] // 1000}K" if r.get("tokens_total") else "")
@@ -441,7 +517,7 @@ def render(mode: str, agent: str, model: str, runs: list, tools: list, tasks: li
     if fails:
         lines += ["", "Failures:"]
         for r in fails:
-            lines.append(f"- `{r['tool']}` {r['task']}: {'; '.join(r.get('why', []))[:240]}"
+            lines.append(f"- `{label(r)}` {r['task']}: {'; '.join(r.get('why', []))[:240]}"
                          + (" (timed out)" if r.get("timed_out") else "")
                          + (f" — {r['errors'][-1][:160]}" if r.get("errors") else ""))
     return "\n".join(lines) + "\n", summary
@@ -458,7 +534,8 @@ def merge(paths: list[str], out: Path) -> int:
     order = list(TOOLS)
     for mode, m in by_mode.items():
         runs = m["runs"]
-        tools = sorted({r["tool"] for r in runs}, key=lambda t: order.index(t) if t in order else 99)
+        tools = sorted({label(r) for r in runs},
+                       key=lambda t: (order.index(t.split(" ")[0]) if t.split(" ")[0] in order else 99, t))
         tasks = list(dict.fromkeys(r["task"] for r in runs))
         table, summary = render(mode, m["agent"], m["model"], runs, tools, tasks)
         (out / f"table-{mode}.md").write_text(table)
@@ -513,7 +590,8 @@ def main() -> int:
             for tool in tools:
                 root = Path(tempfile.mkdtemp(prefix=f"eval-{tool}-{task['id']}-"))
                 site = LiveSite(task["url"]) if task.get("live") else Site()
-                rec = {"tool": tool, "task": task["id"], "rep": rep, "mode": args.mode, "agent": args.agent}
+                rec = {"tool": tool, "task": task["id"], "rep": rep, "mode": args.mode, "agent": args.agent,
+                       "os": OS_NAME}
                 try:
                     work, env = prepare(tool, args.mode, root, args)
                     spec = TOOLS[tool]
@@ -548,9 +626,7 @@ def main() -> int:
                     rec.update({"ok": False, "why": [f"harness: {e}"]})
                 finally:
                     site.close()
-                    # Each tool's own daemon/browser must not leak into the next run.
-                    for pat in ("agent-browser", "playwright-cli", "cli-daemon", "browser-tool"):
-                        subprocess.run(["pkill", "-f", f"{pat}.*{root.name}"], capture_output=True)
+                    cleanup(root)
                 rec.pop("text", None)
                 runs.append(rec)
                 status = "PASS" if rec["ok"] else "FAIL " + "; ".join(rec.get("why", []))[:200]
@@ -559,7 +635,8 @@ def main() -> int:
                       f"wall={rec.get('wall_s')}s)", flush=True)
                 (out / "runs.jsonl").open("a").write(json.dumps(rec) + "\n")
 
-    table, summary = render(args.mode, args.agent, args.model, runs, tools, [t["id"] for t in tasks])
+    labels = [label({"tool": t, "os": OS_NAME}) for t in tools]
+    table, summary = render(args.mode, args.agent, args.model, runs, labels, [t["id"] for t in tasks])
     (out / f"table-{args.mode}.md").write_text(table)
     (out / f"summary-{args.mode}.json").write_text(json.dumps({"mode": args.mode, "agent": args.agent,
                                                                "model": args.model, "tools": summary,

@@ -18,6 +18,7 @@ mod browser;
 mod client;
 mod events;
 mod page;
+mod procjob;
 mod transport;
 
 pub use browser::{Browser, LaunchOptions};

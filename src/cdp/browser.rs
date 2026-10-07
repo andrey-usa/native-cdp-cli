@@ -45,6 +45,9 @@ pub struct Browser {
     stderr: Option<transport::StderrTail>,
     /// Dialog log, popups and per-tab navigation state (see `events`).
     shared: Arc<Shared>,
+    /// Windows: kill-on-close job holding the browser tree, so Chrome dies
+    /// with this process even when it is killed (see `procjob`).
+    job: Option<super::procjob::ProcJob>,
 }
 
 impl Browser {
@@ -136,6 +139,7 @@ impl Browser {
             ws_url,
             stderr: None,
             shared,
+            job: None,
         })
     }
 
@@ -160,7 +164,7 @@ impl Browser {
             child,
             profile_dir,
             ws_url,
-            ..
+            job,
         } = transport::launch_chrome(&opts.exe, opts.headless, &opts.chrome_flags, opts.debugging_port)
             .context("launch chrome")?;
         crate::timing::record("devtools_url", started);
@@ -169,7 +173,9 @@ impl Browser {
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect")?;
         crate::timing::record("ws_connect", connect_started);
-        Ok(Self::finish(handle, client, child, Some(profile_dir), ws_url))
+        let mut browser = Self::finish(handle, client, child, Some(profile_dir), ws_url);
+        browser.job = job;
+        Ok(browser)
     }
 
     fn finish(
@@ -201,6 +207,7 @@ impl Browser {
             ws_url,
             shared,
             stderr: None,
+            job: None,
         }
     }
 
@@ -475,16 +482,21 @@ impl Browser {
         self.client.shutdown();
         if let Ok(mut slot) = self.child.lock() {
             if let Some(mut child) = slot.take() {
-                #[cfg(unix)]
                 if self.kill_group {
                     // Negative pid = the whole process group (wrapper and all).
-                    extern "C" {
-                        fn kill(pid: i32, sig: i32) -> i32;
+                    #[cfg(unix)]
+                    {
+                        extern "C" {
+                            fn kill(pid: i32, sig: i32) -> i32;
+                        }
+                        // SAFETY: plain syscall; the group was created at spawn.
+                        unsafe {
+                            kill(-(child.id() as i32), 9);
+                        }
                     }
-                    // SAFETY: plain syscall; the group was created at spawn.
-                    unsafe {
-                        kill(-(child.id() as i32), 9);
-                    }
+                }
+                if let Some(job) = &self.job {
+                    job.terminate();
                 }
                 let _ = child.kill();
                 let _ = child.wait();

@@ -5,7 +5,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
 #
 # Env: BROWSER_TOOL_INSTALL_DIR (default ~/.local/bin), BROWSER_TOOL_VERSION
-# (a tag such as v0.2.0; default: latest release).
+# (a tag such as v0.2.0; default: latest release), BROWSER_TOOL_GIT_REV
+# (commit for the source build; default: master).
 set -eu
 
 REPO="andrey-usa/native-cdp-cli"
@@ -39,7 +40,7 @@ if [ -n "$target" ] && curl -fsSL --retry 3 -o "$tmp/bt.tar.gz" "$url" 2>/dev/nu
 elif command -v cargo >/dev/null 2>&1; then
   echo "no prebuilt binary for ${target:-$os/$arch}; building from source with cargo (about a minute)…"
   # The repo also holds Rust benchmark contenders, so name the package.
-  cargo install --locked --git "https://github.com/$REPO" browser-tool --root "$tmp/root"
+  cargo install --locked --git "https://github.com/$REPO" ${BROWSER_TOOL_GIT_REV:+--rev "$BROWSER_TOOL_GIT_REV"} browser-tool --root "$tmp/root"
   install -m 0755 "$tmp/root/bin/browser-tool" "$DIR/browser-tool"
   echo "installed $DIR/browser-tool (built from source)"
 else

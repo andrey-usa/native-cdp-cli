@@ -9,6 +9,8 @@ script can read the ladder table without downloading anything.
 import sys
 from pathlib import Path
 
+# Tables carry ✓/✗/⚠: write UTF-8 even where the console code page isn't.
+sys.stdout.reconfigure(encoding="utf-8")
 path = Path(sys.argv[1] if len(sys.argv) > 1 else "bench/ladder/out/table.md")
 title = sys.argv[2] if len(sys.argv) > 2 else "ladder table"
 if not path.exists():

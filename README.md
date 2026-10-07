@@ -18,6 +18,18 @@ curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/in
 browser-tool install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex
+```
+
+Linux, macOS and Windows are supported. On Windows the session socket is a
+loopback TCP port that only accepts clients presenting a random token from
+the session file in your temp directory, CDP runs over a DevTools
+WebSocket, and Chrome sits in a kill-on-close job object, so it still exits
+when browser-tool dies.
+
 browser-tool finds Chrome or Chromium on its own: a system install,
 `$CHROME_BIN`, or a Playwright/Puppeteer browser cache. For the fastest
 cold start, point it at
@@ -33,7 +45,7 @@ Set `$CHROME_BIN` to choose explicitly.
 ## Use (agents and people)
 
 ```sh
-browser-tool -s work start                      # warm headless browser behind a Unix socket
+browser-tool -s work start                      # warm headless browser behind a local socket
 browser-tool -s work goto example.com
 browser-tool -s work --raw ax                   # page as an indented tree, [ref=N] on actionable nodes
 browser-tool -s work click 12                   # act on a ref
@@ -84,7 +96,7 @@ CI runs the full end-to-end suite on:
   for Testing;
 - **chrome-headless-shell**;
 - **Chrome Beta**, as a non-blocking early warning;
-- the runner's own Chrome.
+- the runner's own Chrome, on Linux and on **Windows**.
 
 The suite is weekly as well as on every push, so a new Chrome release is
 caught before agents hit it. In its first runs the matrix caught two real
@@ -157,12 +169,15 @@ contenders now scroll with `behavior: 'instant'`.)
 **chrome-headless-shell** (the same Chrome build without its browser UI
 layer): cold start 0.32s → 0.11s, session 0.66s → 0.32s, browser memory 348 MB → 228 MB.
 
-**CDP transport A/B** (same build and run): `--remote-debugging-pipe` (default)
+**CDP transport A/B** (same build and run): `--remote-debugging-pipe` (default on Linux/macOS)
 vs a DevTools WebSocket port: cold start 0.32s vs 0.32s,
 session 0.66s vs 0.65s. No speed difference: the WebSocket handshake itself is ~10 ms. The pipe is the default for two other reasons:
 it opens no TCP port that another local process could attach to, and Chrome exits when
 browser-tool dies (EOF on its command pipe), so a killed agent leaks no browser
 (`tests/edge_cases.rs`: over a WebSocket port the browser outlives its driver).
+Windows has no pipe transport here and uses the WebSocket, with a kill-on-close
+job object giving the same guarantee (`killed_session_server_takes_its_browser_down`
+runs there too).
 
 **This build vs the previous one, same machine and run** (`bt-baseline`,
 built from the previous master by the ladder's `baseline_ref` A/B):
@@ -216,7 +231,8 @@ collapsed FAQ, and a support form inside an iframe. Success is judged from
 the site's recorded state and the final answer, never from the agent's
 claim. Every run also records model requests, tokens, shell commands and
 off-tool workarounds (curl, ad-hoc scripts). Model, prompt template, Chrome
-and site are identical across tools.
+and site are identical across tools. `os: windows` (or `both`) runs the same
+jobs on Windows runners, where the agent's shell is PowerShell.
 
 The three tools run as parallel jobs. Keys live in the `main` environment,
 one slot per tool, because Gemini's free quota is per Google Cloud project:
@@ -229,8 +245,9 @@ command plans. Runs that die on a model quota or outage are reported as
 
 **Natural checks** ([`agent-check.yml`](.github/workflows/agent-check.yml),
 every master push, PRs and nightly): Gemini is told in plain words to buy
-something with browser-tool and its skill. Once on the local shop (a real
-check, judged from the recorded order), and once on Sauce Labs' public demo
+something with browser-tool and its skill. On the local shop, once on Linux
+and once on Windows through PowerShell (real checks, judged from the
+recorded order), and once on Sauce Labs' public demo
 shop [saucedemo.com](https://www.saucedemo.com), which exists for automation
 practice and takes no real payment (informational, judged from the
 confirmation and the order total).
@@ -245,8 +262,8 @@ history policy.
 
 - `src/protocol.rs`: CLI parsing, the JSON-lines protocol and `Driver` (the `OPS` table is `--help`)
 - `src/browser.rs`: `BrowserSession`: browser discovery (incl. chrome-headless-shell), launch flags, tabs
-- `src/cdp/`: from-scratch CDP engine: pipe/WebSocket transport, JSON-RPC client (`BT_CDP_TRACE`), page ops, `ax.rs` (snapshot tree), `events.rs` (dialogs, popups, navigation)
-- `src/session.rs`: named sessions: Unix-socket server, client, detached `start`
+- `src/cdp/`: from-scratch CDP engine: pipe/WebSocket transport, JSON-RPC client (`BT_CDP_TRACE`), page ops, `ax.rs` (snapshot tree), `events.rs` (dialogs, popups, navigation), `procjob.rs` (Windows job object)
+- `src/session.rs`: named sessions: socket server (Unix socket; loopback TCP + token on Windows), client, detached `start`
 - `src/timing.rs`: `BT_TIMINGS=1` launch/close phase timings on stderr
 - `tests/`: browser e2e: serve protocol, sessions, and the Acme Supply scenario
 - `bench/site/server.py`: Acme Supply, a deterministic local shop (SPA, iframes, shadow DOM, dialogs, popups, login, upload)

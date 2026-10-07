@@ -20,7 +20,7 @@ def main() -> int:
     if not os.path.exists(path):
         print(f"{path}: no summary (mode not run)")
         return 0
-    doc = json.load(open(path))
+    doc = json.load(open(path, encoding="utf-8"))
     for keep in (12, 6, 3, 0):
         for run in doc.get("runs", []):
             run["shell_commands"] = run.get("shell_commands", [])[:keep]
@@ -36,7 +36,7 @@ def main() -> int:
         if len(text) <= CHUNK * MAX_NOTICES * 0.9:
             break
     tmp = path + ".annot"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     here = os.path.dirname(os.path.abspath(__file__))
     annotate = os.path.join(here, "..", "ladder", "annotate.py")

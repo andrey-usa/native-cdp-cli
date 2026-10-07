@@ -20,7 +20,7 @@ browser-tool [GLOBAL FLAGS] <command> [ARGS] [GLOBAL FLAGS]
 
 | global flag | meaning |
 |---|---|
-| `-s, --session <name\|path>` | named session (`$TMPDIR/browser-tool-<name>.sock`; a value with `/` is a socket path). `$BROWSER_TOOL_SESSION` sets a default for client calls |
+| `-s, --session <name\|path>` | named session (`$TMPDIR/browser-tool-<name>.sock`, `%TEMP%` on Windows; a value with a path separator is used as the path). `$BROWSER_TOOL_SESSION` sets a default for client calls |
 | `--raw` | print only the result (strings unquoted, e.g. the `ax` tree). Errors go to stderr as `error: …`, notes (dialogs, new tabs) as `note: …` |
 | `--pretty` | pretty-print the JSON |
 | `--timeout-ms <ms>` | before the command: navigation/command timeout (default 35000). After an element command: that op's element wait (default 5000) |
@@ -177,10 +177,16 @@ connection at a time.
   Brave and Edge work via `--chromium`. chrome-headless-shell starts about
   3× faster than full Chrome (cold start 0.32 s → 0.11 s in bench run
   37498679296).
-- **CDP transport.** `--remote-debugging-pipe` by default: no TCP port, and
-  the browser exits when browser-tool dies. `--transport ws` (or
-  `$BT_CDP_TRANSPORT=ws`) opens a DevTools WebSocket port instead, for
-  attaching other tools.
+- **CDP transport.** `--remote-debugging-pipe` by default on Linux/macOS:
+  no TCP port, and the browser exits when browser-tool dies. `--transport ws`
+  (or `$BT_CDP_TRANSPORT=ws`) opens a DevTools WebSocket port instead, for
+  attaching other tools. Windows always uses `ws`; Chrome runs in a
+  kill-on-close job object there, so it still exits with browser-tool.
+- **Windows sessions.** The session file holds `127.0.0.1:<port> <token>`;
+  the server listens on that loopback port and drops any client whose first
+  line isn't the token (a web page posting to localhost can't drive it).
+  `start` detaches the server from the console, the caller's job and its
+  stdio handles, so the shell that ran `start` returns at once.
 - **`--engine lightpanda`** (experimental) starts `lightpanda serve`. The
   binary comes from `$LIGHTPANDA_BIN` or `PATH`, or from `--chromium`. It
   supports a single tab and fires no load events, so `goto` waits for commit.

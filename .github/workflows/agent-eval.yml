@@ -13,6 +13,9 @@ name: agent-eval
 #   playwright-cli -> GEMINI_API_KEY_3
 # Without any key only the scripted baseline runs.
 #
+# `os: windows` (or `both`) runs the same jobs on windows-latest: the agent's
+# shell is PowerShell there, and rows read `<tool> (windows)`.
+#
 # Results: annotations `agent eval <mode> N/M` and `agent eval json <mode>`
 # on the report job; per-tool tables on each tool job.
 
@@ -26,7 +29,7 @@ on:
         description: "comma-separated task ids (lookup,purchase,account,docs,support,purchase-live) or all (local tasks)"
         default: "all"
       mode:
-        description: "skilled (skill preinstalled), onboard (agent installs the tool from its docs), or both"
+        description: "skilled (skill preinstalled), onboard (agent installs the tool from its docs), both, or scripted (no model: the scripted baseline only)"
         default: "both"
       model:
         description: "Gemini model id (free tier: a Flash-Lite model has the largest daily quota)"
@@ -34,6 +37,9 @@ on:
       reps:
         description: "repetitions per tool x task"
         default: "1"
+      os:
+        description: "linux, windows or both"
+        default: "linux"
   schedule:
     - cron: "41 9 * * 2"   # after the free quota resets (midnight Pacific)
 
@@ -49,25 +55,33 @@ jobs:
       - id: m
         env:
           TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}
+          OSES: ${{ inputs.os || 'linux' }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os
           slot = {"browser-tool": "GEMINI_API_KEY", "agent-browser": "GEMINI_API_KEY_2",
                   "playwright-cli": "GEMINI_API_KEY_3"}
+          runner = {"linux": "ubuntu-latest", "windows": "windows-latest"}
+          oses = ["linux", "windows"] if os.environ["OSES"] == "both" else \
+                 [o for o in os.environ["OSES"].split(",") if o in runner]
           tools = [t.strip() for t in os.environ["TOOLS"].split(",") if t.strip() in slot]
-          print("matrix=" + json.dumps([{"tool": t, "key": slot[t]} for t in tools]))
+          print("matrix=" + json.dumps([{"tool": t, "key": slot[t], "os": o, "runner": runner[o]}
+                                        for o in oses for t in tools]))
           EOF
 
   eval:
     needs: plan
-    name: ${{ matrix.run.tool }}
+    name: ${{ matrix.run.tool }} (${{ matrix.run.os }})
     strategy:
       fail-fast: false
       matrix:
         run: ${{ fromJson(needs.plan.outputs.matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.run.runner }}
     timeout-minutes: 180
     environment: main
+    defaults:
+      run:
+        shell: bash
     env:
       TOOL: ${{ matrix.run.tool }}
       MODEL: ${{ inputs.model || 'gemini-3.5-flash-lite' }}
@@ -82,36 +96,46 @@ jobs:
       - name: Scripted baseline (site + checks + harness, no model)
         if: matrix.run.tool == 'browser-tool'
         run: |
-          python3 bench/agent-eval/run.py --agent scripted --out out/scripted
-          python3 bench/ladder/annotate.py out/scripted/table-skilled.md "agent eval scripted"
+          rc=0
+          python bench/agent-eval/run.py --agent scripted --reps "$REPS" --out out/scripted --require-pass || rc=$?
+          python bench/ladder/annotate.py out/scripted/table-skilled.md "agent eval scripted (${{ matrix.run.os }})"
+          if [ $rc -ne 0 ]; then
+            python bench/agent-eval/annotate_runs.py out/scripted/summary-skilled.json "agent eval scripted json (${{ matrix.run.os }})"
+          fi
+          exit $rc
       - name: Key
         run: |
           if [ "$HAS_KEY" != true ]; then
             echo "::notice title=agent eval::no Gemini key in the main environment; only the scripted baseline ran."
           else
-            echo "::notice title=agent eval key::$TOOL used $KEY_SLOT"
+            echo "::notice title=agent eval key::$TOOL (${{ matrix.run.os }}) used $KEY_SLOT"
           fi
       - name: Model smoke test
-        if: env.HAS_KEY == 'true'
+        id: smoke
+        # Model steps still run when the scripted baseline failed (its own
+        # annotation says why; the job stays red), but not after a failed
+        # smoke test.
+        if: "!cancelled() && env.HAS_KEY == 'true' && env.MODE != 'scripted'"
         env:
           GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          if ! timeout 300 python3 bench/agent-eval/run.py --smoke --model "$MODEL" --gemini "$GEMINI_BIN" \
-               --out out/smoke > /tmp/smoke.txt 2>&1; then
-            tail -c 3000 /tmp/smoke.txt > /tmp/smoke-tail.txt
-            python3 bench/ladder/annotate.py /tmp/smoke-tail.txt "gemini smoke failure ($TOOL, $KEY_SLOT)"
+          log="$RUNNER_TEMP/smoke.txt"
+          if ! python bench/agent-eval/run.py --smoke --run-timeout 300 --model "$MODEL" --gemini "$GEMINI_BIN" \
+               --out out/smoke > "$log" 2>&1; then
+            tail -c 3000 "$log" > "$RUNNER_TEMP/smoke-tail.txt"
+            python bench/ladder/annotate.py "$RUNNER_TEMP/smoke-tail.txt" "gemini smoke failure ($TOOL, ${{ matrix.run.os }}, $KEY_SLOT)"
             exit 1
           fi
-          cat /tmp/smoke.txt
+          cat "$log"
       - name: Onboarding (the agent installs the tool from its own docs)
-        if: env.HAS_KEY == 'true' && (env.MODE == 'onboard' || env.MODE == 'both')
+        if: "!cancelled() && env.HAS_KEY == 'true' && (env.MODE == 'onboard' || env.MODE == 'both') && steps.smoke.outcome == 'success'"
         env:
           GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          python3 bench/agent-eval/run.py --mode onboard --tools "$TOOL" --model "$MODEL" \
+          python bench/agent-eval/run.py --mode onboard --tools "$TOOL" --model "$MODEL" \
             --gemini "$GEMINI_BIN" --reps 1 --out out/gemini
       - name: Install the tool (for skilled runs)
-        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && env.TOOL != 'browser-tool'
+        if: "!cancelled() && env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && env.TOOL != 'browser-tool' && steps.smoke.outcome == 'success'"
         run: |
           case "$TOOL" in
             agent-browser) npm install -g agent-browser@0.38.2 ;;
@@ -119,17 +143,17 @@ jobs:
           esac
           npm ls -g --depth=0
       - name: Skilled runs (tool installed, its own skill in the workspace)
-        if: env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both')
+        if: "!cancelled() && env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && steps.smoke.outcome == 'success'"
         env:
           GEMINI_API_KEY: ${{ secrets[matrix.run.key] || secrets.GEMINI_API_KEY }}
         run: |
-          python3 bench/agent-eval/run.py --mode skilled --tools "$TOOL" --tasks "$TASKS" \
+          python bench/agent-eval/run.py --mode skilled --tools "$TOOL" --tasks "$TASKS" \
             --model "$MODEL" --gemini "$GEMINI_BIN" --reps "$REPS" --out out/gemini
       - name: Upload this tool's results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eval-${{ matrix.run.tool }}
+          name: eval-${{ matrix.run.tool }}-${{ matrix.run.os }}
           path: out/gemini/summary-*.json
           if-no-files-found: ignore
 

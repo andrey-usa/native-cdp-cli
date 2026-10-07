@@ -290,7 +290,6 @@ fn run_tool_raw(args: &[&str]) -> (bool, String) {
 /// Named session: a detached server keeps one browser warm across separate
 /// processes — the way an agent's shell tool calls arrive.
 #[test]
-#[cfg(unix)]
 fn browser_tool_named_session_across_processes() {
     if !chrome_available() {
         eprintln!("skipping: no Chrome/Chromium/Edge binary installed");

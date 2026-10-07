@@ -3,8 +3,6 @@
 //! Each test drives the tool the way an agent does: one CLI process per
 //! step against a named session.
 
-#![cfg(unix)]
-
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -13,6 +11,11 @@ use serde_json::Value;
 
 fn tool_exe() -> String {
     env!("CARGO_BIN_EXE_browser-tool").to_string()
+}
+
+/// The fixture servers are Python; Windows installs it as `python`.
+fn python() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
 }
 
 /// Same resolver as the tool; `BT_REQUIRE_BROWSER=1` (CI) forbids skipping.
@@ -39,12 +42,12 @@ impl Drop for Site {
 
 fn start_site() -> Site {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/edge_site.py");
-    let mut child = Command::new("python3")
+    let mut child = Command::new(python())
         .arg(script)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("python3 tests/fixtures/edge_site.py");
+        .expect("python tests/fixtures/edge_site.py");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
     let base = line
@@ -381,5 +384,56 @@ fn killed_session_server_takes_its_browser_down() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let _ = Command::new("kill").args(["-9", &browser.to_string()]).status();
+    panic!("browser {browser} outlived its killed session server by 5 s");
+}
+
+/// Windows has no pipe transport here: Chrome runs in a kill-on-close job
+/// owned by the session server, so killing the server (`taskkill /F`)
+/// still takes its browser down.
+#[cfg(windows)]
+#[test]
+fn killed_session_server_takes_its_browser_down() {
+    if !chrome_available() {
+        return;
+    }
+    let s = Session {
+        name: std::env::temp_dir()
+            .join(format!("bt-edge-orphan-{}.sock", std::process::id()))
+            .display()
+            .to_string(),
+    };
+    let started = s.ok(&["start", "--idle-timeout-s", "120"]);
+    let server = started["pid"].as_u64().expect("start reports the server pid");
+    s.ok(&["goto", "about:blank"]);
+    let query = format!(
+        "(Get-CimInstance Win32_Process -Filter 'ParentProcessId={server}' | \
+         Where-Object {{ $_.Name -like '*chrome*' -or $_.Name -like '*msedge*' }}).ProcessId"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+        .output()
+        .expect("powershell");
+    let browser: u32 = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no browser child of {server}: {}", String::from_utf8_lossy(&out.stdout)));
+    let alive = |pid: u32| {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .expect("tasklist");
+        String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
+    };
+    assert!(alive(browser), "browser {browser} should be running");
+    let _ = Command::new("taskkill").args(["/F", "/PID", &server.to_string()]).status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if !alive(browser) {
+            let _ = std::fs::remove_file(&s.name);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &browser.to_string()]).status();
     panic!("browser {browser} outlived its killed session server by 5 s");
 }

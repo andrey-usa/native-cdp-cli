@@ -47,7 +47,6 @@ fn run(parsed: &protocol::ParsedArgs, output: &mut dyn Write) -> ExitCode {
     if let Some(local) = &parsed.local {
         return protocol::run_local(local, config, output);
     }
-    #[cfg(unix)]
     {
         use browser_tool::session;
         // An explicit `--session` always wins; $BROWSER_TOOL_SESSION only
@@ -71,11 +70,6 @@ fn run(parsed: &protocol::ParsedArgs, output: &mut dyn Write) -> ExitCode {
             }
             (None, None) => {}
         }
-    }
-    #[cfg(not(unix))]
-    if parsed.start || config.session.is_some() {
-        eprintln!("browser-tool: --session needs a Unix platform (Linux/macOS)");
-        return ExitCode::from(2);
     }
     match &parsed.command {
         Some(command) => protocol::oneshot(config, command, output),

@@ -14,6 +14,10 @@ A single native binary that drives Chrome over the DevTools Protocol. Use it
 browser-tool --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
 ```
 
+Windows (PowerShell): `irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex`.
+The commands below work the same there; quote JavaScript that contains `$`
+with single quotes in PowerShell.
+
 It finds Chrome/Chromium on its own (system install, or Playwright/Puppeteer
 caches). Otherwise pass `--chromium <path>` to `start`, or set `$CHROME_BIN`.
 

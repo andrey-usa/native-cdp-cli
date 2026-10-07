@@ -7,6 +7,5 @@
 pub mod browser;
 pub mod protocol;
 pub mod timing;
-#[cfg(unix)]
 pub mod session;
 pub mod cdp;

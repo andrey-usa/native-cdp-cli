@@ -5,13 +5,18 @@ name: agent-check
 #
 #   purchase       local Acme Supply shop: cart, coupon, checkout through a
 #                  card iframe; judged from the order the site recorded.
+#                  Runs on Linux and on Windows (the agent's shell is then
+#                  PowerShell; browser-tool runs its Windows paths: WebSocket
+#                  CDP, loopback-TCP sessions, kill-on-close job object).
 #   purchase-live  Sauce Labs' public demo shop (saucedemo.com, built for
 #                  automation practice; no real payment): log in, cart,
 #                  checkout; judged from the confirmation and total.
 #                  Live internet: informational, never a gate.
 #
 # Runs on master pushes, PRs from this repo and nightly. Needs a Gemini key
-# in the `main` environment; without one it reports that and passes.
+# in the `main` environment; without one it reports that and passes. Each
+# leg reads its own key slot (free quota is per Google Cloud project) and
+# falls back to GEMINI_API_KEY.
 
 on:
   push:
@@ -30,21 +35,24 @@ concurrency:
 
 jobs:
   check:
-    name: ${{ matrix.task }}
+    name: ${{ matrix.task }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - task: purchase
-            live: false
-          - task: purchase-live
-            live: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+          - { task: purchase, os: linux, runner: ubuntu-latest, live: false, key: GEMINI_API_KEY }
+          - { task: purchase, os: windows, runner: windows-latest, live: false, key: GEMINI_API_KEY_2 }
+          - { task: purchase-live, os: linux, runner: ubuntu-latest, live: true, key: GEMINI_API_KEY_3 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     continue-on-error: ${{ matrix.live }}
     environment: main
+    defaults:
+      run:
+        shell: bash
     env:
-      HAS_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+      HAS_KEY: ${{ secrets[matrix.key] != '' || secrets.GEMINI_API_KEY != '' }}
+      KEY_SLOT: ${{ secrets[matrix.key] != '' && matrix.key || 'GEMINI_API_KEY' }}
       MODEL: gemini-3.5-flash-lite
     steps:
       - uses: actions/checkout@v4
@@ -56,12 +64,13 @@ jobs:
       - name: Agent run
         if: env.HAS_KEY == 'true'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets[matrix.key] || secrets.GEMINI_API_KEY }}
         run: |
-          python3 bench/agent-eval/run.py --mode skilled --tools browser-tool --tasks "${{ matrix.task }}" \
+          echo "::notice title=agent check key::${{ matrix.task }} (${{ matrix.os }}) used $KEY_SLOT"
+          python bench/agent-eval/run.py --mode skilled --tools browser-tool --tasks "${{ matrix.task }}" \
             --model "$MODEL" --gemini "$GEMINI_BIN" --out out --require-pass
       - name: Result
         if: always() && env.HAS_KEY == 'true'
         run: |
-          python3 bench/ladder/annotate.py out/table-skilled.md "agent check ${{ matrix.task }}"
-          python3 bench/agent-eval/annotate_runs.py out/summary-skilled.json "agent check json ${{ matrix.task }}"
+          python bench/ladder/annotate.py out/table-skilled.md "agent check ${{ matrix.task }} (${{ matrix.os }})"
+          python bench/agent-eval/annotate_runs.py out/summary-skilled.json "agent check json ${{ matrix.task }} (${{ matrix.os }})"

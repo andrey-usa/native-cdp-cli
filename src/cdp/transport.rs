@@ -47,6 +47,8 @@ pub struct LaunchedChrome {
     pub child: Child,
     pub profile_dir: tempfile::TempDir,
     pub ws_url: String,
+    /// Windows: the kill-on-close job holding the browser (see `procjob`).
+    pub job: Option<super::procjob::ProcJob>,
 }
 
 /// Guard that reaps/terminates the spawned browser on drop unless disarmed.
@@ -119,6 +121,8 @@ pub fn launch_chrome(
     .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("spawn chrome")?;
+    // Before Chrome starts its own children, so they land in the job too.
+    let job = super::procjob::ProcJob::contain(&child);
     let stderr = child
         .stderr
         .take()
@@ -178,6 +182,7 @@ pub fn launch_chrome(
         child: kill.disarm(),
         profile_dir,
         ws_url,
+        job,
     })
 }
 
@@ -202,7 +207,9 @@ pub struct LaunchedPipe {
 }
 
 /// Bounded tail of a browser's stderr, kept for error messages.
+/// (Only the Unix pipe launch fills one.)
 #[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub struct StderrTail(Arc<Mutex<Vec<u8>>>);
 
 impl StderrTail {

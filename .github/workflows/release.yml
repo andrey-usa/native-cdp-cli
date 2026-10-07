@@ -1,8 +1,9 @@
 name: release
 
 # Prebuilt binaries for agents and people without a Rust toolchain:
-# static Linux (musl) x86_64/aarch64 and macOS arm64/x86_64, attached to a
-# GitHub release. install.sh downloads the right one.
+# static Linux (musl) x86_64/aarch64, macOS arm64/x86_64 and Windows x64,
+# attached to a GitHub release. install.sh / install.ps1 download the right
+# one.
 
 on:
   push:
@@ -29,7 +30,11 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
           - { os: macos-14, target: aarch64-apple-darwin }
           - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,6 +47,10 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
       - name: Build
+        env:
+          # Windows: link the C runtime statically, so the .exe runs on a
+          # machine without the Visual C++ redistributable.
+          RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
         run: cargo build --release --locked --bin browser-tool --target ${{ matrix.target }}
       - name: Smoke test (native targets)
         if: "!contains(matrix.target, 'x86_64-apple') || runner.arch == 'X64'"
@@ -50,10 +59,20 @@ jobs:
           "$bin" --version
           "$bin" skill | head -3
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           tar -C target/${{ matrix.target }}/release -czf dist/browser-tool-${{ matrix.target }}.tar.gz browser-tool
           (cd dist && shasum -a 256 browser-tool-${{ matrix.target }}.tar.gz > browser-tool-${{ matrix.target }}.tar.gz.sha256)
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = "dist/browser-tool-${{ matrix.target }}.zip"
+          Compress-Archive -Path target/${{ matrix.target }}/release/browser-tool.exe -DestinationPath $zip
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  browser-tool-${{ matrix.target }}.zip" | Out-File -Encoding ascii -NoNewline "$zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}

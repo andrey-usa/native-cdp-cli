@@ -94,14 +94,20 @@ fn chrome_flags() -> Vec<String> {
 /// Common Chromium/Chrome/Edge install paths used when no override is given.
 fn common_executables() -> Vec<String> {
     let mut paths = Vec::new();
-    for var in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
-        if let Ok(p) = std::env::var(var) {
-            paths.push(format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe"));
-            paths.push(format!("{p}\\Google\\Chrome\\Application\\chrome.exe"));
-        }
+    // Windows: Chrome first (what the tests and CI target), Edge (always
+    // installed on Windows) as the fallback.
+    let program_dirs: Vec<String> = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .collect();
+    for p in &program_dirs {
+        paths.push(format!("{p}\\Google\\Chrome\\Application\\chrome.exe"));
     }
     if let Ok(p) = std::env::var("LOCALAPPDATA") {
         paths.push(format!("{p}\\Google\\Chrome\\Application\\chrome.exe"));
+    }
+    for p in &program_dirs {
+        paths.push(format!("{p}\\Microsoft\\Edge\\Application\\msedge.exe"));
     }
     paths.push("/usr/bin/google-chrome".into());
     paths.push("/usr/bin/google-chrome-stable".into());
@@ -117,8 +123,14 @@ fn common_executables() -> Vec<String> {
 /// For headless sessions chrome-headless-shell comes first: it starts 2-3x
 /// faster than full Chrome (no browser UI layer to bring up).
 fn cached_browsers(headless: bool) -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
     let mut roots = vec![format!("{home}/.cache/ms-playwright")];
+    if let Ok(p) = std::env::var("LOCALAPPDATA") {
+        roots.push(format!("{p}/ms-playwright"));
+    }
+    roots.push(format!("{home}/Library/Caches/ms-playwright"));
     if let Ok(p) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
         roots.insert(0, p);
     }
@@ -144,16 +156,22 @@ fn cached_browsers(headless: bool) -> Vec<String> {
             "chrome-linux/headless_shell",
             "chrome-headless-shell-linux64/chrome-headless-shell",
             "chrome-mac/headless_shell",
+            "chrome-win/headless_shell.exe",
+            "chrome-headless-shell-win64/chrome-headless-shell.exe",
         ]));
         full.extend(pick(root, "chromium-", &[
             "chrome-linux/chrome",
             "chrome-linux64/chrome",
             "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            "chrome-win/chrome.exe",
+            "chrome-win64/chrome.exe",
         ]));
     }
     let puppeteer = format!("{home}/.cache/puppeteer");
     shells.extend(pick(&format!("{puppeteer}/chrome-headless-shell"), "linux-", &["chrome-headless-shell-linux64/chrome-headless-shell"]));
+    shells.extend(pick(&format!("{puppeteer}/chrome-headless-shell"), "win64-", &["chrome-headless-shell-win64/chrome-headless-shell.exe"]));
     full.extend(pick(&format!("{puppeteer}/chrome"), "linux-", &["chrome-linux64/chrome"]));
+    full.extend(pick(&format!("{puppeteer}/chrome"), "win64-", &["chrome-win64/chrome.exe"]));
     if headless {
         shells.into_iter().chain(full).collect()
     } else {
@@ -250,6 +268,12 @@ fn which_lightpanda() -> Result<String> {
     anyhow::bail!("lightpanda not on PATH")
 }
 
+/// CDP transport when none is asked for. The pipe (fds 3/4) is Unix-only
+/// here; Windows uses a DevTools WebSocket on a random localhost port, and
+/// a kill-on-close job object stands in for the pipe's "Chrome exits with
+/// its driver" guarantee (see `cdp::procjob`).
+pub const DEFAULT_TRANSPORT: &str = if cfg!(unix) { "pipe" } else { "ws" };
+
 /// How long a click on a link/submit button or an Enter key waits for the
 /// navigation it probably triggers to be requested (it can trail the input
 /// event's CDP reply by a task or two). Ends early once it arrives.
@@ -303,9 +327,12 @@ impl BrowserSession {
         let transport = transport
             .map(str::to_string)
             .or_else(|| std::env::var("BT_CDP_TRANSPORT").ok())
-            .unwrap_or_else(|| "pipe".into());
+            .unwrap_or_else(|| DEFAULT_TRANSPORT.into());
         if !matches!(transport.as_str(), "pipe" | "ws") {
             bail!("--transport takes pipe|ws, got {transport:?}");
+        }
+        if transport == "pipe" && !cfg!(unix) {
+            bail!("--transport pipe needs Linux/macOS; Windows uses ws (the default there)");
         }
         let launch_started = std::time::Instant::now();
         let lightpanda = is_lightpanda(engine);

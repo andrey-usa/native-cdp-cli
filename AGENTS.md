@@ -31,6 +31,8 @@ gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
 | annotation title | from | contents |
 |---|---|---|
 | `cargo test failure` | ci.yml | full output of failing tests |
+| `cargo test failure (windows)` / `cargo test summary (windows)` | ci.yml `windows` job | failing output / which test binaries and e2e tests ran on Windows |
+| `install.sh failure` / `install.ps1 failure` | ci.yml `install` jobs | last lines of the installer run |
 | compiler / clippy file:line | ci.yml (problem matcher) | the error itself |
 | `ladder table N/M` | bench.yml | the markdown results table |
 | `ladder json N/M` | bench.yml | `publish.json` (chart-ready results; join chunks in order) |
@@ -41,7 +43,7 @@ gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
 | `agent eval json <mode> N/M` | agent-eval.yml | every run: answer, checks, requests, tokens, shell commands |
 | `gemini smoke failure (<tool>, <key slot>)` | agent-eval.yml | why the model call failed (quota, model id, key) |
 | `agent eval key` | agent-eval.yml (each tool job) | which key slot that tool's job used |
-| `agent check <task>` / `agent check json <task>` | agent-check.yml | natural purchase checks (local shop, live demo shop) |
+| `agent check <task> (<os>)` / `agent check json <task> (<os>)` | agent-check.yml | natural purchase checks (local shop on Linux and Windows, live demo shop) |
 
 If something you need isn't there, add an annotation for it (see
 `bench/ladder/annotate.py`) — don't push a debug commit to find out.
@@ -88,12 +90,26 @@ If something you need isn't there, add an annotation for it (see
    ```
    Every browser-tool run also reports where its launch time went
    (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
-4. **Browser compatibility** is part of `ci.yml`: Chrome Stable plus three
+4. **Windows** has no local loop here (no Windows target in the sandbox):
+   `ci.yml`'s `windows` job builds, lints and runs every test on the
+   runner's Chrome in ~2 min; compile errors come back as problem-matcher
+   annotations. Windows differs in three places only: CDP over WebSocket
+   (no pipe), sessions over loopback TCP + token (`src/session.rs`
+   `endpoint`), Chrome in a kill-on-close job (`src/cdp/procjob.rs`).
+   `agent-eval.yml -f os=windows` and agent-check's Windows leg run Gemini
+   CLI there (PowerShell shell; `run.py` resolves tools via the run's PATH
+   and kills leftovers through CIM, since Windows has no `pkill`).
+   `-f mode=scripted` runs only the no-model baseline (any OS, any time of
+   day). The first Chrome launch on a fresh Windows VM takes 4–6 s
+   (`devtools_url` ~4 s), later ones ~0.4 s (8 VMs, run 37549075986); one
+   first launch out of ~50 failed its WebSocket connect, cause unknown — the
+   scripted step now annotates the full error if it recurs.
+5. **Browser compatibility** is part of `ci.yml`: Chrome Stable plus three
    milestones back, chrome-headless-shell and Beta (non-blocking). Each one
    runs the e2e tests with `BT_CDP_TRACE` and then `tools/cdp_check.py`.
    Before using a new CDP method or parameter, check it exists in the
    *oldest* supported milestone: `bash tools/protocol_dump.sh <chrome> p.json`.
-5. **Agent eval** (`agent-eval.yml`, keys in the `main` environment):
+6. **Agent eval** (`agent-eval.yml`, keys in the `main` environment):
    Gemini CLI does the five Acme tasks with each tool, one parallel job per
    tool, each on its own key slot (`GEMINI_API_KEY`, `_2`, `_3`; free quota
    is per Google Cloud project). Free-tier quota is per day, so narrow it
@@ -103,11 +119,11 @@ If something you need isn't there, add an annotation for it (see
    ```sh
    python3 bench/agent-eval/run.py --agent scripted --out /tmp/eval
    ```
-6. **One decisive run per hypothesis.** Decide beforehand what output would
+7. **One decisive run per hypothesis.** Decide beforehand what output would
    confirm or kill the hypothesis, and make sure that output lands in an
    annotation. If two runs in a row didn't change your mind, stop and re-read
    the code path end to end instead of adding more logging.
-7. Full `reps=3` bench only after CI and a narrow run are green.
+8. Full `reps=3` bench only after CI and a narrow run are green.
 
 ## 4. Root cause before mitigation
 
@@ -201,9 +217,9 @@ If something you need isn't there, add an annotation for it (see
 
 | path | what |
 |---|---|
-| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation state), `ax.rs` (snapshot tree) |
+| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation state), `ax.rs` (snapshot tree), `procjob.rs` (Windows kill-on-close job) |
 | `src/protocol.rs` | CLI parsing + JSON-lines protocol + `Driver` |
-| `src/session.rs` | named Unix-socket sessions (`--session`, `start`) |
+| `src/session.rs` | named sessions (`--session`, `start`): Unix socket; loopback TCP + token file on Windows |
 | `src/timing.rs` | `BT_TIMINGS=1` phase timings printed at shutdown |
 | `tests/serve_roundtrip.rs` | serve protocol + named session e2e |
 | `tests/site_scenarios.rs` | realistic end-to-end flow on the Acme site (SPA, iframes, shadow DOM, dialogs, popups, login, upload, slow load) |
@@ -213,4 +229,4 @@ If something you need isn't there, add an annotation for it (see
 | `tools/` | `cdp_check.py`, `protocol_dump.sh`, `cft_matrix.py` (Chrome for Testing matrix) |
 | `.claude/skills/browser-tool/SKILL.md` | the agent guide, embedded in the binary (`browser-tool skill`) |
 | `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/` (incl. `cli_agent.py` for the agent CLI scenario), `annotate.py` |
-| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix, install.sh), `bench.yml` (manual), `agent-eval.yml` (manual/weekly, parallel per tool), `agent-check.yml` (push/PR/nightly natural purchase checks), `vendor.yml`, `release.yml` (tags) |
+| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix, Windows, install.sh/install.ps1), `bench.yml` (manual), `agent-eval.yml` (manual/weekly, parallel per tool), `agent-check.yml` (push/PR/nightly natural purchase checks, Linux + Windows), `vendor.yml`, `release.yml` (tags) |

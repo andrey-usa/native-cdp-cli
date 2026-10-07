@@ -12,8 +12,6 @@
 //! The server records carts/orders/tickets, so the test checks what really
 //! happened, not just what the page showed.
 
-#![cfg(unix)]
-
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 
@@ -21,6 +19,11 @@ use serde_json::Value;
 
 fn tool_exe() -> String {
     env!("CARGO_BIN_EXE_browser-tool").to_string()
+}
+
+/// The fixture servers are Python; Windows installs it as `python`.
+fn python() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
 }
 
 /// True when the tool itself would find a browser to launch (same resolver
@@ -50,7 +53,7 @@ impl Drop for Site {
 
 fn start_site() -> Option<Site> {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/bench/site/server.py");
-    let mut child = Command::new("python3")
+    let mut child = Command::new(python())
         .args([script, "--port", "0"])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

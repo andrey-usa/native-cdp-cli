@@ -1,5 +1,5 @@
-//! Named background sessions: one warm browser behind a Unix socket, driven
-//! by one shell command per op.
+//! Named background sessions: one warm browser behind a local socket,
+//! driven by one shell command per op.
 //!
 //! Why this exists: `serve` keeps a browser warm, but only for as long as the
 //! caller holds its stdin open. An AI agent driving a shell runs each tool
@@ -15,12 +15,17 @@
 //! browser-tool --session s quit               # browser + server shut down
 //! ```
 //!
-//! The wire format on the socket is the `serve` protocol verbatim (one JSON
-//! command per line, one JSON response per line), so any client that can
-//! talk to `serve` can talk to a session too.
+//! The wire format is the `serve` protocol verbatim (one JSON command per
+//! line, one JSON response per line), so any client that can talk to
+//! `serve` can talk to a session too.
+//!
+//! The socket: a Unix socket on Linux/macOS. On Windows a loopback TCP
+//! port whose address and a random token sit in the session file (in the
+//! user's own temp dir); a client must send the token as its first line, so
+//! nothing that can only reach the port (a web page posting to localhost,
+//! another user) can drive the browser.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{ExitCode, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,10 +36,122 @@ use serde_json::{json, Value};
 
 use crate::protocol::{self, Command, Driver, SessionConfig};
 
-/// Socket path for a session: a value containing `/` is used as-is, a bare
-/// name maps to `$TMPDIR/browser-tool-<name>.sock`.
+use endpoint::{connect, Listener, Stream};
+
+#[cfg(unix)]
+mod endpoint {
+    use std::io;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::Path;
+
+    pub type Stream = UnixStream;
+
+    pub struct Listener(UnixListener);
+
+    pub fn connect(path: &Path) -> io::Result<Stream> {
+        UnixStream::connect(path)
+    }
+
+    impl Listener {
+        pub fn bind(path: &Path) -> io::Result<Listener> {
+            UnixListener::bind(path).map(Listener)
+        }
+
+        pub fn accept(&self) -> io::Result<Stream> {
+            self.0.accept().map(|(stream, _)| stream)
+        }
+    }
+}
+
+#[cfg(windows)]
+mod endpoint {
+    use std::io::{self, Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::path::Path;
+    use std::time::Duration;
+
+    pub type Stream = TcpStream;
+
+    pub struct Listener {
+        inner: TcpListener,
+        token: String,
+    }
+
+    /// The session file holds `127.0.0.1:<port> <token>`.
+    fn read_session_file(path: &Path) -> io::Result<(SocketAddr, String)> {
+        let text = std::fs::read_to_string(path)?;
+        let bad = || io::Error::new(io::ErrorKind::InvalidData, "malformed session file");
+        let (addr, token) = text.trim().split_once(' ').ok_or_else(bad)?;
+        Ok((addr.parse().map_err(|_| bad())?, token.to_string()))
+    }
+
+    pub fn connect(path: &Path) -> io::Result<Stream> {
+        let (addr, token) = read_session_file(path)?;
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+        stream.set_nodelay(true)?;
+        stream.write_all(format!("{token}\n").as_bytes())?;
+        Ok(stream)
+    }
+
+    /// 128 random bits as hex: std's `RandomState` keys come from the OS
+    /// RNG, so SipHash under them is unpredictable to anyone else.
+    fn random_token() -> String {
+        use std::hash::{BuildHasher, Hasher};
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        (0..2u64)
+            .map(|i| {
+                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+                h.write_u64(i);
+                h.write_u128(nanos);
+                h.write_u32(std::process::id());
+                format!("{:016x}", h.finish())
+            })
+            .collect()
+    }
+
+    impl Listener {
+        pub fn bind(path: &Path) -> io::Result<Listener> {
+            let inner = TcpListener::bind("127.0.0.1:0")?;
+            let token = random_token();
+            // Write-then-rename: a client never reads a half-written file.
+            let tmp = path.with_extension("sock.tmp");
+            std::fs::write(&tmp, format!("{} {token}\n", inner.local_addr()?))?;
+            std::fs::rename(&tmp, path)?;
+            Ok(Listener { inner, token })
+        }
+
+        /// Next client that proves it read the session file.
+        pub fn accept(&self) -> io::Result<Stream> {
+            let (mut stream, _) = self.inner.accept()?;
+            stream.set_nodelay(true)?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            // Byte by byte: anything after the token line is the first
+            // command and must stay in the socket for the line reader.
+            let mut line = Vec::with_capacity(40);
+            let mut byte = [0u8; 1];
+            while line.len() <= 128 {
+                if stream.read(&mut byte)? == 0 || byte[0] == b'\n' {
+                    break;
+                }
+                line.push(byte[0]);
+            }
+            if line.strip_suffix(b"\r").unwrap_or(&line[..]) != self.token.as_bytes() {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "bad session token"));
+            }
+            stream.set_read_timeout(None)?;
+            Ok(stream)
+        }
+    }
+}
+
+/// Socket path for a session: a value containing a path separator is used
+/// as-is, a bare name maps to `$TMPDIR/browser-tool-<name>.sock` (on
+/// Windows `%TEMP%`; there the file holds the loopback address + token).
 pub fn socket_path(name: &str) -> PathBuf {
-    if name.contains('/') {
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
         PathBuf::from(name)
     } else {
         std::env::temp_dir().join(format!("browser-tool-{name}.sock"))
@@ -63,7 +180,7 @@ fn print_json(output: &mut dyn Write, value: &Value, config: &SessionConfig) {
 /// socket, one connection at a time, until `quit` or the idle timeout.
 pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     let path = socket_path(name);
-    if UnixStream::connect(&path).is_ok() {
+    if connect(&path).is_ok() {
         eprintln!(
             "browser-tool: a session is already listening on {}",
             path.display()
@@ -80,7 +197,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let listener = match UnixListener::bind(&path) {
+    let listener = match Listener::bind(&path) {
         Ok(listener) => listener,
         Err(e) => {
             eprintln!("browser-tool: bind {}: {e}", path.display());
@@ -99,8 +216,8 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
         spawn_idle_watchdog(path.clone(), Arc::clone(&last_activity), config.idle_timeout_s);
     }
 
-    for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
+    loop {
+        let Ok(stream) = listener.accept() else { continue };
         last_activity.store(now_s(), Ordering::Relaxed);
         if serve_connection(&mut driver, stream, &last_activity) {
             break;
@@ -114,7 +231,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
 }
 
 /// Serve one client connection; returns true once a `quit` was answered.
-fn serve_connection(driver: &mut Driver, stream: UnixStream, last: &AtomicU64) -> bool {
+fn serve_connection(driver: &mut Driver, stream: Stream, last: &AtomicU64) -> bool {
     let reader = match stream.try_clone() {
         Ok(read_half) => BufReader::new(read_half),
         Err(_) => return false,
@@ -147,8 +264,8 @@ fn spawn_idle_watchdog(path: PathBuf, last: Arc<AtomicU64>, idle_s: u64) {
             continue;
         }
         eprintln!("browser-tool: idle for {idle_s}s, shutting the session down");
-        if let Ok(mut stream) = UnixStream::connect(&path) {
-            let _ = writeln!(stream, "{{\"op\":\"quit\"}}");
+        if let Ok(mut stream) = connect(&path) {
+            let _ = stream.write_all(b"{\"op\":\"quit\"}\n");
             let _ = stream.flush();
             let mut reply = String::new();
             let _ = BufReader::new(stream).read_line(&mut reply);
@@ -165,7 +282,7 @@ pub fn client(
     output: &mut dyn Write,
 ) -> ExitCode {
     let path = socket_path(name);
-    let stream = match UnixStream::connect(&path) {
+    let stream = match connect(&path) {
         Ok(stream) => stream,
         Err(e) => {
             let error = format!(
@@ -194,7 +311,12 @@ pub fn client(
     request["id"] = json!(1);
     localize_request(&mut request, config);
     let mut writer = &stream;
-    if writeln!(writer, "{request}").and_then(|_| writer.flush()).is_err() {
+    // One write: on Windows (TCP) a split line would wait out Nagle.
+    if writer
+        .write_all(format!("{request}\n").as_bytes())
+        .and_then(|_| writer.flush())
+        .is_err()
+    {
         print_json(
             output,
             &json!({ "id": null, "ok": false, "error": "session closed the connection" }),
@@ -279,12 +401,10 @@ fn fail(output: &mut dyn Write, config: &SessionConfig, error: String) -> ExitCo
 
 /// `start`: spawn a detached session server and wait until it accepts.
 pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> ExitCode {
-    use std::os::unix::process::CommandExt;
-
     let path = socket_path(name);
     let log_path = path.with_extension("log");
     let (socket_str, log_str) = (path.display().to_string(), log_path.display().to_string());
-    if UnixStream::connect(&path).is_ok() {
+    if connect(&path).is_ok() {
         print_json(
             output,
             &json!({ "id": null, "ok": true, "result": {
@@ -324,18 +444,15 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(log))
-        // Own process group: the server outlives this command and the
-        // agent's shell that ran it.
-        .process_group(0);
-    let mut child = match cmd.spawn() {
+        .stderr(Stdio::from(log));
+    let mut child = match spawn_detached(&mut cmd) {
         Ok(child) => child,
         Err(e) => return fail(output, config, format!("spawn session server: {e}")),
     };
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if UnixStream::connect(&path).is_ok() {
+        if connect(&path).is_ok() {
             print_json(
                 output,
                 &json!({ "id": null, "ok": true, "result": {
@@ -373,4 +490,44 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Spawn the session server so it outlives this command and the agent's
+/// shell that ran it: its own process group on Unix; on Windows detached
+/// from our console, in a new process group, out of the caller's job when
+/// that job allows it (Node's child-process job does), and without a copy
+/// of our stdio handles — an inherited stdout would keep the caller's pipe
+/// open, and a shell waiting for EOF would hang until the session quits.
+#[cfg(unix)]
+fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0).spawn()
+}
+
+#[cfg(windows)]
+fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    for which in STD_HANDLES {
+        // SAFETY: plain Win32 calls on this process's own std handles.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() && handle as isize != -1 {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+    let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    cmd.creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .or_else(|_| cmd.creation_flags(flags).spawn())
 }
