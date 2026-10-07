@@ -457,3 +457,28 @@ fn ax_waits_for_fetched_content() {
     let (_, again) = s.run(&["ax"]);
     assert!(again < Duration::from_millis(400), "no wait on a quiet page: {again:?}");
 }
+
+/// A tab brought back to the front takes clicks at once. CI caught the
+/// Acme scenario's `screenshot`, `tab-new`, `tab-select 0`, `tab-close 1`,
+/// `click`: the page logged visibilitychange but no pointer event at all.
+#[test]
+fn click_right_after_switching_tabs_lands() {
+    if !chrome_available() {
+        return;
+    }
+    let site = start_site();
+    let s = Session::start("tabs");
+    let shot = std::env::temp_dir().join(format!("bt-tabs-{}.png", std::process::id()));
+    let shot = shot.to_str().unwrap();
+    let rounds = 15;
+    for i in 0..rounds {
+        s.ok(&["goto", &format!("{}/counter", site.base)]);
+        s.ok(&["screenshot", shot]);
+        s.ok(&["tab-new", &format!("{}/landed", site.base)]);
+        s.ok(&["tab-select", "0"]);
+        s.ok(&["tab-close", "1"]);
+        s.ok(&["click", "--text", "Next page"]);
+        assert_eq!(s.text("document.getElementById('n').textContent"), "1", "round {i}: the click never reached the page");
+    }
+    let _ = std::fs::remove_file(shot);
+}

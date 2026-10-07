@@ -118,7 +118,10 @@ page "Cart — Acme Supply" http://127.0.0.1:8765/cart (tab 0 of 2)
   `goto … && … ax` shows a single-page app's list, not its "Loading…"
   placeholder.
 - **Clicks** are trusted mouse events at the element's centre after
-  scrolling it into view. Same-origin iframe offsets are added in the page;
+  scrolling it into view. navigera checks that the press reached the page:
+  Chrome occasionally acknowledges mouse events it never delivers (seen
+  right after a tab switch), and then the click is sent once more, or as
+  DOM events if it still doesn't arrive (`synthetic_click` says so). Same-origin iframe offsets are added in the page;
   inside a cross-origin iframe (refs only) the box comes from
   `DOM.getContentQuads`.
   - A styled checkbox or radio (the `<input>` hidden or covered by its own

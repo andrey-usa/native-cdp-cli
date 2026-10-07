@@ -78,7 +78,17 @@ const DIAG_JS: &str = "() => ({ url: location.href, ready: document.readyState, 
     active: document.activeElement && document.activeElement.outerHTML.slice(0, 160), \
     hovered: [...document.querySelectorAll(':hover')].map(e => e.tagName + (e.id ? '#' + e.id : '')).join(' > '), \
     pageinfo: (document.getElementById('pageinfo') || {}).textContent, \
+    events: window.__nvEvents || null, \
     body: document.body ? document.body.innerText.slice(0, 600) : null })";
+
+/// Records visibility changes and pointer events with timestamps, so a
+/// click that "did nothing" shows whether it reached the page at all.
+const EVENT_LOG_JS: &str = "() => { window.__nvEvents = []; \
+    const log = (what) => window.__nvEvents.push(what + '@' + Math.round(performance.now())); \
+    document.addEventListener('visibilitychange', () => log('vis:' + document.visibilityState)); \
+    for (const t of ['mousemove', 'mousedown', 'mouseup', 'click']) \
+      document.addEventListener(t, e => log(t + ':' + (e.target.id || e.target.tagName)), true); \
+    return true }";
 
 fn truncate(s: &str, n: usize) -> String {
     if s.len() <= n { s.to_string() } else { format!("{}…", &s[..s.char_indices().take_while(|(i, _)| *i < n).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0)]) }
@@ -324,6 +334,7 @@ fn acme_supply_shopping_docs_login_support() {
     let state = agent.ok(&["press", "Enter", "--selector", "#password"]);
     assert!(state["url"].as_str().unwrap().ends_with("/account"), "form POST + 303: {state}");
     agent.ok(&["reload"]);
+    agent.ok(&["eval", "--expression", EVENT_LOG_JS]);
     let shot = std::env::temp_dir().join(format!("bt-shot-{}.png", std::process::id()));
     let png = agent.ok(&["screenshot", shot.to_str().unwrap()]);
     assert!(png["bytes"].as_u64().unwrap() > 1000, "{png}");

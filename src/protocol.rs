@@ -1241,7 +1241,9 @@ impl Driver {
                 let mut state = self.state_json();
                 if point.get("synthetic").and_then(Value::as_bool) == Some(true) {
                     // The agent should know the click was not a real one.
-                    state["synthetic_click"] = json!(if point.get("covered").and_then(Value::as_bool) == Some(true) {
+                    state["synthetic_click"] = json!(if point.get("dropped").and_then(Value::as_bool) == Some(true) {
+                        "the browser did not deliver the mouse events (twice); dispatched DOM events instead".to_string()
+                    } else if point.get("covered").and_then(Value::as_bool) == Some(true) {
                         format!(
                             "element is covered by {}; dispatched DOM events instead (close the overlay if the click had no effect)",
                             point.get("covered_by").and_then(Value::as_str).unwrap_or("another element")

@@ -151,8 +151,16 @@ If something you need isn't there, add an annotation for it (see
   that file). Three rounds found that `--disable-features=OptimizationHints`
   segfaults Chrome 151 (runs 37461070056 → 37461788587 → 37464048004).
 - A scenario step that fails dumps the page state (URL, visibility, focus,
-  hovered chain, last steps, `ax`) into the `cargo test failure` annotation.
-  Read that before guessing at a flake.
+  hovered chain, last steps, `ax`, and a log of visibility/pointer events)
+  into the `cargo test failure` annotation. Read that before guessing at a
+  flake. That log settled the ~5% "Next page click did nothing" flake: the
+  page saw `visibilitychange` but no pointer event at all after a tab
+  switch — Chrome acked `Input.dispatchMouseEvent` without delivering it.
+  `click` now checks that the press arrived and resends once (bisect run
+  37626179229: 40/40 with 3 resends logged; `BT_NO_CLICK_CHECK=1` turns the
+  check off). Network.enable was cleared first (37623035163: 20/20 with it,
+  19/20 without). `chrome-bisect.yml` annotates each variant's first full
+  failure and counts click resends in the session logs.
 
 ### What A/B runs have already settled (don't redo)
 

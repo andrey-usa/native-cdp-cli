@@ -96,7 +96,15 @@ const CLICK_PREP: &str = r#"async function (el, force, settleMs) {
         hit = (r.width > 0 && r.height > 0) ? (root.elementFromPoint ? root.elementFromPoint(x, y) : doc.elementFromPoint(x, y)) : null;
         if (hit && (hit === el || el.contains(hit) || (hit.shadowRoot && hit.shadowRoot.contains(el)) || onLabel(hit))) {
             const p = topLevel(doc, x, y);
-            if (p) return Object.assign(p, { nav: mayNavigate(el) });
+            if (p) {
+                // Count the press reaching this document: Chrome can ack a
+                // dispatched mouse event it never delivered (see click()).
+                const w = doc.defaultView;
+                w.top.__nvSeen = 0;
+                for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click'])
+                    w.addEventListener(t, () => { w.top.__nvSeen++; }, { capture: true, once: true });
+                return Object.assign(p, { nav: mayNavigate(el), check: true });
+            }
             // Inside a cross-origin frame: our coordinates are frame-local;
             // the caller asks CDP for the box instead.
             return { xframe: true, nav: mayNavigate(el) };
@@ -467,11 +475,33 @@ impl Page {
             .await?;
         // fetch/XHR tracking for `network_quiet` (best effort: an engine
         // without the Network domain just never waits for data).
-        let _ = self
-            .client
-            .send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
-            .await;
+        // `BT_NO_NETWORK=1` (diagnostic) leaves the Network domain off.
+        if std::env::var_os("BT_NO_NETWORK").is_none() {
+            let _ = self
+                .client
+                .send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
+                .await;
+        }
         Ok(())
+    }
+
+    /// Wait (at most `max`) until the page has produced two animation
+    /// frames: by then a tab brought to the front has painted and takes
+    /// input. Returns false on timeout (a page that can't paint).
+    pub fn wait_frame(&self, max: Duration) -> bool {
+        let ms = max.as_millis();
+        let js = format!(
+            "new Promise(r => {{ setTimeout(() => r(false), {ms}); \
+             requestAnimationFrame(() => requestAnimationFrame(() => r(true))); }})"
+        );
+        self.send(
+            "Runtime.evaluate",
+            json!({ "expression": js, "awaitPromise": true, "returnByValue": true }),
+            max + Duration::from_secs(1),
+        )
+        .ok()
+        .and_then(|r| r.pointer("/result/value").and_then(Value::as_bool))
+        .unwrap_or(false)
     }
 
     /// Wait until no fetch/XHR is in flight and none started or ended for
@@ -898,7 +928,55 @@ impl Page {
             // Engine without the Input domain (e.g. Lightpanda): DOM events.
             return self.on_element(target, "click", CLICK_PREP, &[json!(true), settle], wait, timeout);
         }
+        let check = point.get("check").and_then(Value::as_bool) == Some(true)
+            && std::env::var_os("BT_NO_CLICK_CHECK").is_none(); // diagnostic knob
+        if check && !self.press_arrived(timeout) {
+            eprintln!(
+                "[click] the browser did not deliver the mouse events at ({}, {}); sending them again",
+                point["x"], point["y"]
+            );
+            // Chrome acked the mouse events without delivering them: no
+            // pointerdown/mousedown/mouseup/click reached the page. Seen in
+            // CI right after a tab switch, when the tab has no hit-test data
+            // yet and the browser finds no target for the event. Nothing
+            // happened on the page, so sending it again can't double-click.
+            self.wait_frame(Duration::from_millis(500));
+            self.mouse_click(&point, timeout)?;
+            if !self.press_arrived(timeout) {
+                eprintln!("[click] still not delivered; dispatching DOM events");
+                let mut res = self.on_element(target, "click", CLICK_PREP, &[json!(true), settle], wait, timeout)?;
+                res["dropped"] = json!(true);
+                return Ok(res);
+            }
+            point["redelivered"] = json!(true);
+        }
         Ok(point)
+    }
+
+    /// Did the click's press reach the page (`__nvSeen`, set by CLICK_PREP)?
+    /// An error (the click navigated away, the context is gone) counts as
+    /// arrived: only a definite "nothing came" triggers a resend.
+    /// A slow page gets 300 ms to process the events before "nothing came"
+    /// is believed (a dropped event never arrives; a queued one does).
+    fn press_arrived(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+        loop {
+            let seen = self
+                .send(
+                    "Runtime.evaluate",
+                    json!({ "expression": "window.__nvSeen", "returnByValue": true }),
+                    timeout,
+                )
+                .ok()
+                .map(|r| r.pointer("/result/value").and_then(Value::as_u64));
+            match seen {
+                Some(Some(0)) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Some(Some(0)) => return false,
+                _ => return true,
+            }
+        }
     }
 
     /// Centre of a node's first content quad, in top-level viewport

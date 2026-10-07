@@ -12,6 +12,8 @@ name: chrome-bisect
 # VARIANTS=, REPEAT=); pushing it runs the bisect. Don't merge that file.
 #
 # Knobs: BT_CDP_TRANSPORT=ws|pipe, BT_NO_DISCOVER=1 (no Target.setDiscoverTargets),
+# BT_NO_NETWORK=1 (no Network.enable, so no fetch/XHR wait before ax),
+# BT_NO_CLICK_CHECK=1 (don't verify that a click's mouse events arrived),
 # BT_DROP_FLAGS=<comma-separated flag prefixes>, BT_EXTRA_FLAGS="<flags>".
 
 on:
@@ -80,20 +82,25 @@ jobs:
           out=/tmp/bisect.md
           echo "### Chrome M$MILESTONE ($KIND, $($CHROME_BIN --version)): \`cargo test $TEST\`" > $out
           echo "" >> $out
-          echo "| variant | passed | first failure |" >> $out
-          echo "|---|---|---|" >> $out
+          echo "| variant | passed | first failure | click resends (session logs) |" >> $out
+          echo "|---|---|---|---|" >> $out
           IFS=';' read -ra VARS <<< "$VARIANTS"
           for v in "${VARS[@]}"; do
             pass=0; first=""
+            rm -f /tmp/bt-*.log /tmp/nv-*.log
             for i in $(seq $REPEAT); do
               log=/tmp/run.log; rm -f /tmp/chrome.log
               if [ "$v" = "baseline" ]; then envs=(); else read -ra envs <<< "$v"; fi
               env "${envs[@]}" BT_CHROME_LOG=/tmp/chrome.log cargo test --locked $TEST > $log 2>&1
               if [ $? -eq 0 ]; then pass=$((pass+1)); elif [ -z "$first" ]; then
                 first=$( { grep -m1 -E "panicked at|error:" $log; grep -m1 -E "Received signal|Check failed|FATAL" /tmp/chrome.log 2>/dev/null; } | tr '|\n' '/ ' | cut -c1-300)
+                # The whole failure (the scenario's page-state dump) as its own annotation.
+                sed -n '/^---- /,/^test result/p' $log | grep -v -E '^ +[0-9]+: |^ +at ' | tail -c 12000 > /tmp/first-failure.md
+                python3 bench/ladder/annotate.py /tmp/first-failure.md "bisect failure ($v)"
               fi
             done
-            echo "| \`$v\` | $pass/$REPEAT | $first |" >> $out
+            resends=$(cat /tmp/bt-*.log /tmp/nv-*.log 2>/dev/null | grep -c 'did not deliver the mouse events')
+            echo "| \`$v\` | $pass/$REPEAT | $first | $resends |" >> $out
           done
           cat $out
           python3 bench/ladder/annotate.py $out "bisect"

@@ -41,6 +41,7 @@ input{position:absolute;left:4px;top:4px;margin:0;width:20px;height:20px}
     # A single-page app: the list arrives by fetch, then renders a beat later.
     "/spa": """<!doctype html><title>spa</title><p id=s role=status>Loading items…</p><script>
 fetch('/slow?ms=300').then(r => r.text()).then(() => setTimeout(() => { s.textContent = 'Loaded 3 items' }, 200))</script>""",
+    "/counter": """<!doctype html><title>counter</title><p>Page <span id=n>0</span></p><button id=next onclick="n.textContent=+n.textContent+1">Next page</button>""",
     "/prompt": """<!doctype html><title>prompt</title><button onclick="o.textContent='got:'+prompt('Name?','Ada')">ask</button><div id=o></div>""",
 }
 

@@ -515,9 +515,12 @@ impl BrowserSession {
             bail!("no tab {index} (have {})", self.pages.len());
         }
         self.active = index;
-        let target_id = self.pages[index].target_id().to_string();
-        self.browser.activate_target(&target_id)?;
-        Ok(())
+        self.bring_to_front()
+    }
+
+    /// Make the active tab the foreground one.
+    fn bring_to_front(&self) -> Result<()> {
+        self.browser.activate_target(self.active_tab().target_id())
     }
 
     /// Close one tab by index; the last remaining tab cannot be closed.
@@ -531,10 +534,15 @@ impl BrowserSession {
         let timeout = self.timeout(None);
         self.pages[index].close_target(timeout)?;
         self.pages.remove(index);
+        let closed_active = index == self.active;
         if self.active >= self.pages.len() {
             self.active = self.pages.len() - 1;
         } else if index < self.active {
             self.active -= 1;
+        }
+        if closed_active {
+            // The tab we act on next was in the background.
+            self.bring_to_front()?;
         }
         Ok(())
     }
