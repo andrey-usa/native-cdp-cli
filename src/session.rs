@@ -158,13 +158,9 @@ pub fn socket_path(name: &str) -> PathBuf {
     }
 }
 
-/// `$NAVIGERA_SESSION` (or the pre-0.3 `$BROWSER_TOOL_SESSION`), if set:
-/// the default session for client calls.
+/// `$NAVIGERA_SESSION`, if set: the default session for client calls.
 pub fn env_session() -> Option<String> {
-    ["NAVIGERA_SESSION", "BROWSER_TOOL_SESSION"]
-        .iter()
-        .filter_map(|var| std::env::var(var).ok())
-        .find(|s| !s.trim().is_empty())
+    std::env::var("NAVIGERA_SESSION").ok().filter(|s| !s.trim().is_empty())
 }
 
 fn now_s() -> u64 {

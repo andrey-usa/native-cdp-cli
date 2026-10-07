@@ -15,10 +15,6 @@ use std::process::ExitCode;
 use navigera::protocol::{self, ArgsError};
 
 fn main() -> ExitCode {
-    // RustWright telemetry opt-out (must be set before any launch).
-    std::env::set_var("DISABLE_TELEMETRY", "1");
-    std::env::set_var("DO_NOT_TRACK", "1");
-
     // Panics now go to stderr, which stays clean: Chrome's own stderr is piped
     // (and drained) inside the launch, so its DBus noise can't mask our output.
     let parsed = match navigera::protocol::parse_args(std::env::args()) {

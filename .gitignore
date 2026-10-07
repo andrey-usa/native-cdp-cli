@@ -5,8 +5,6 @@ bench/ladder/contenders/chromey/Cargo.lock
 .env
 *.log
 /reports/
-/bench/node_modules/
-/bench/out/
 /bench/ladder/out/
 /bench/ladder/node_modules/
 /bench/ladder/fixtures/

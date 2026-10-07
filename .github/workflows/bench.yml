@@ -23,7 +23,7 @@ on:
         required: false
         default: 'false'
       only:
-        description: "comma-separated contenders (empty = all), e.g. bt-serve,gorod — fast narrow runs"
+        description: "comma-separated contenders (empty = all), e.g. nv-serve,gorod — fast narrow runs"
         required: false
         default: ''
       scenarios:
@@ -31,7 +31,7 @@ on:
         required: false
         default: 'eval,cold,realworld,browse,agent'
       baseline_ref:
-        description: "A/B: also run navigera built from this ref (branch, tag or FULL commit SHA) as bt-baseline; same machine, same run"
+        description: "A/B: also run navigera built from this ref (branch, tag or FULL commit SHA) as nv-baseline; same machine, same run"
         required: false
         default: ''
 
@@ -111,7 +111,7 @@ jobs:
           chmod a+x /usr/local/bin/lightpanda
           lightpanda version || true
 
-      - name: Install chrome-headless-shell (bt-shell contender)
+      - name: Install chrome-headless-shell (nv-shell contender)
         # Chrome for Testing's headless-only build of the same Stable Chrome:
         # no browser UI layer, so it starts faster. Optional.
         continue-on-error: true
@@ -139,14 +139,11 @@ jobs:
         if: inputs.baseline_ref != ''
         run: |
           git fetch --depth=1 origin "${{ inputs.baseline_ref }}"
-          git worktree add /tmp/bt-baseline FETCH_HEAD
-          # Refs before 0.3.0 name the binary browser-tool.
-          bin=navigera
-          grep -q '^name = "navigera"' /tmp/bt-baseline/Cargo.toml || bin=browser-tool
-          cargo build --release --bin "$bin" \
-            --manifest-path /tmp/bt-baseline/Cargo.toml --target-dir /tmp/bt-baseline-target
-          echo "NAVIGERA_BASELINE=/tmp/bt-baseline-target/release/$bin" >> "$GITHUB_ENV"
-          echo "baseline: $(git -C /tmp/bt-baseline rev-parse --short HEAD)"
+          git worktree add /tmp/nv-baseline FETCH_HEAD
+          cargo build --release --bin navigera \
+            --manifest-path /tmp/nv-baseline/Cargo.toml --target-dir /tmp/nv-baseline-target
+          echo "NAVIGERA_BASELINE=/tmp/nv-baseline-target/release/navigera" >> "$GITHUB_ENV"
+          echo "baseline: $(git -C /tmp/nv-baseline rev-parse --short HEAD)"
 
       - name: Build chromiumoxide contender (release)
         run: |

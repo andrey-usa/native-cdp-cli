@@ -1,6 +1,6 @@
 """Regenerate README's '## Benchmarks' section from a ladder publish.json.
 
-Usage: gen_readme.py README.md publish.json ["what the bt-baseline A/B changed"]
+Usage: gen_readme.py README.md publish.json ["what the nv-baseline A/B changed"]
 (AGENTS.md: numbers in README come from a run's publish.json, never retyped.)"""
 import json
 import sys
@@ -9,15 +9,15 @@ readme_path, pub_path = sys.argv[1], sys.argv[2]
 change_note = sys.argv[3].strip() if len(sys.argv) > 3 else ""
 doc = json.load(open(pub_path))
 all_rows = doc["contenders"]
-baseline = next((r for r in all_rows if r["name"] == "bt-baseline"), None)
-ws = next((r for r in all_rows if r["name"] == "bt-ws"), None)
-rows = [r for r in all_rows if r["name"] not in ("bt-baseline", "bt-ws")]
+baseline = next((r for r in all_rows if r["name"] == "nv-baseline"), None)
+ws = next((r for r in all_rows if r["name"] == "nv-ws"), None)
+rows = [r for r in all_rows if r["name"] not in ("nv-baseline", "nv-ws")]
 NAMES = {
-    "bt-serve": "`bt-serve` (this repo on Chrome)",
-    "bt-shell": "`bt-shell` (this repo on chrome-headless-shell)",
-    "bt-brave": "`bt-brave` (this repo on Brave)",
-    "bt-edge": "`bt-edge` (this repo on Edge)",
-    "bt-lightpanda": "`bt-lightpanda` (this repo on Lightpanda, 1 tab)",
+    "nv-serve": "`nv-serve` (this repo on Chrome)",
+    "nv-shell": "`nv-shell` (this repo on chrome-headless-shell)",
+    "nv-brave": "`nv-brave` (this repo on Brave)",
+    "nv-edge": "`nv-edge` (this repo on Edge)",
+    "nv-lightpanda": "`nv-lightpanda` (this repo on Lightpanda, 1 tab)",
     "gorod": "`gorod` (go-rod 0.116.2, Go)",
     "chromedp": "`chromedp` 0.19.1 (Go)",
     "chromiumoxide": "`chromiumoxide` 0.7 (Rust)",
@@ -97,17 +97,17 @@ lines += [
     "",
 ]
 order = ", ".join(f"{r['name']} {r['session']['wall_s']:.2f}s" for r in chrome)
-bt_best = next(r for r in chrome if r["name"].startswith("bt-"))
-serve_row = next((r for r in chrome if r["name"] == "bt-serve"), None)
-other = next((r for r in chrome if not r["name"].startswith("bt-")), None)
-rank = chrome.index(bt_best) + 1
+nv_best = next(r for r in chrome if r["name"].startswith("nv-"))
+serve_row = next((r for r in chrome if r["name"] == "nv-serve"), None)
+other = next((r for r in chrome if not r["name"].startswith("nv-")), None)
+rank = chrome.index(nv_best) + 1
 lines += [
     f"**Reading the table.** Session wall order: {order}. navigera's best",
-    f"({bt_best['name']}) ranks #{rank} of {len(chrome)}"
-    + (f"; on regular Chrome, bt-serve ({serve_row['session']['wall_s']:.2f}s) is "
+    f"({nv_best['name']}) ranks #{rank} of {len(chrome)}"
+    + (f"; on regular Chrome, nv-serve ({serve_row['session']['wall_s']:.2f}s) is "
        + ("ahead of" if serve_row["session"]["wall_s"] < other["session"]["wall_s"] else "behind")
        + f" the fastest other driver, {other['name']} ({other['session']['wall_s']:.2f}s)"
-       if serve_row and other and serve_row is not bt_best else "")
+       if serve_row and other and serve_row is not nv_best else "")
     + ". All native drivers (navigera,",
     "go-rod, chromiumoxide, chromedp) spend tens of milliseconds of their own CPU",
     "or less; the Node drivers spend hundreds and carry 80–150 MB of their own RSS.",
@@ -132,8 +132,8 @@ if rw and br:
         "contenders now scroll with `behavior: 'instant'`.)",
         "",
     ]
-serve = next((r for r in rows if r["name"] == "bt-serve"), None)
-shell = next((r for r in rows if r["name"] == "bt-shell"), None)
+serve = next((r for r in rows if r["name"] == "nv-serve"), None)
+shell = next((r for r in rows if r["name"] == "nv-shell"), None)
 if shell and serve and shell.get("cold") and serve.get("cold"):
     lines += [
         "**chrome-headless-shell** (the same Chrome build without its browser UI",
@@ -165,7 +165,7 @@ if baseline and serve:
     def pct(new, old):
         return f"{100 * (new / old - 1):+.0f}%"
     lines += [
-        "**This build vs the previous one, same machine and run** (`bt-baseline`,",
+        "**This build vs the previous one, same machine and run** (`nv-baseline`,",
         "built from the previous master by the ladder's `baseline_ref` A/B):",
         f"session {baseline['session']['wall_s']:.2f}s → {serve['session']['wall_s']:.2f}s "
         f"({pct(serve['session']['wall_s'], baseline['session']['wall_s'])}), "
@@ -178,7 +178,7 @@ if baseline and serve:
     ph = (serve.get("cold") or {}).get("phases_ms") or {}
     if ph:
         lines += [
-            "Where navigera's cold start goes (`BT_TIMINGS`, best run): browser up",
+            "Where navigera's cold start goes (`NAVIGERA_TIMINGS`, best run): browser up",
             f"{ph.get('browser_up', 0):.0f} ms, first page {ph.get('first_page', 0):.0f} ms, "
             f"close {ph.get('close', 0):.0f} ms.",
             "",

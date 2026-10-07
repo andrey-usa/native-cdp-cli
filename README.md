@@ -1,6 +1,6 @@
 # navigera
 
-**`navigera`** (formerly `browser-tool`; repo `native-cdp-cli`) drives
+**`navigera`** drives
 Chrome from the shell, one command per step.
 It is a single native binary (Rust, no Node) that speaks the Chrome DevTools
 Protocol directly, and it is built for AI agents:
@@ -14,15 +14,15 @@ Protocol directly, and it is built for AI agents:
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
-# or: cargo install --locked --git https://github.com/andrey-usa/native-cdp-cli navigera
+curl -fsSL https://raw.githubusercontent.com/andrey-usa/navigera/master/install.sh | sh
+# or: cargo install --locked --git https://github.com/andrey-usa/navigera navigera
 navigera install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/andrey-usa/navigera/master/install.ps1 | iex
 ```
 
 Linux, macOS and Windows are supported. On Windows the session socket is a
@@ -38,7 +38,7 @@ cold start, point it at
 `npx @puppeteer/browsers install chrome-headless-shell@stable` gives the same
 Chrome without its browser UI layer. In the benchmark it cut cold start from
 0.32 s to 0.11 s and the scripted session from 0.66 s to 0.32 s (run
-[37498679296](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37498679296)).
+[37498679296](https://github.com/andrey-usa/navigera/actions/runs/37498679296)).
 navigera uses a system Chrome first; with none installed it picks
 chrome-headless-shell (or Chromium) from a Playwright or Puppeteer cache.
 Set `$CHROME_BIN` to choose explicitly.
@@ -116,7 +116,7 @@ the automation flags (`--disable-features=OptimizationHints`, bisected with
 before its redirect landed. Both are fixed.
 
 Each run also checks **CDP protocol correctness**. navigera records
-every command it sends (`BT_CDP_TRACE`), and
+every command it sends (`NAVIGERA_CDP_TRACE`), and
 [`tools/cdp_check.py`](tools/cdp_check.py) validates every method, parameter
 and enum value against the `/json/protocol` that *that* browser serves.
 Deprecated or unknown usage fails the build. Edge and Brave are covered by
@@ -132,19 +132,19 @@ each driver. Fixtures are deterministic and local (500-card listing,
 
 | contender | session wall (best of 3) | warm eval mean (200×) | cold start (best of 5) | driver CPU (own) | driver peak RSS (own) | browser memory (PSS) |
 |---|---|---|---|---|---|---|
-| `bt-shell` (this repo on chrome-headless-shell) | **0.29s** | **0.41 ms** | **0.08s** | **<10 ms** | **5 MB** | 204 MB |
-| `bt-brave` (this repo on Brave) | 0.57s | 0.51 ms | 0.27s | **<10 ms** | **5 MB** | 370 MB |
-| `bt-serve` (this repo on Chrome) | 0.64s | 0.68 ms | 0.28s | **<10 ms** | 6 MB | 344 MB |
-| `bt-edge` (this repo on Edge) | 0.69s | 0.55 ms | 0.31s | **10 ms** | **5 MB** | 467 MB |
-| `gorod` (go-rod 0.116.2, Go) | 0.71s | 0.49 ms | 0.29s | **20 ms** | 13 MB | 365 MB |
-| `chromiumoxide` 0.7 (Rust) | 0.81s | 0.82 ms | 0.38s | **20 ms** | 9 MB | 473 MB |
-| `chromey` 2.x (Rust, maintained chromiumoxide fork) | 0.97s | 0.95 ms | 0.39s | 50 ms | 22 MB | 463 MB |
-| `chromedp` 0.19.1 (Go) | 0.99s | 0.58 ms | 0.51s | **30 ms** | 13 MB | 465 MB |
-| `puppeteer-core` (Node) | 1.01s | 0.83 ms | 0.62s | 0.37 s | 80 MB | 411 MB |
-| `playwright-core` (Node) | 1.24s | 1.32 ms | 0.75s | 0.67 s | 150 MB | 418 MB |
-| `bt-lightpanda` (this repo on Lightpanda, 1 tab) | 0.18s | 0.23 ms | 0.11s | **<10 ms** | **5 MB** | 15 MB |
+| `nv-shell` (this repo on chrome-headless-shell) | **0.30s** | **0.43 ms** | **0.09s** | **<10 ms** | **5 MB** | 198 MB |
+| `nv-brave` (this repo on Brave) | 0.60s | 0.54 ms | 0.27s | **<10 ms** | 6 MB | 356 MB |
+| `nv-serve` (this repo on Chrome) | 0.62s | 0.63 ms | 0.30s | **<10 ms** | **5 MB** | 365 MB |
+| `nv-edge` (this repo on Edge) | 0.67s | 0.54 ms | 0.32s | **10 ms** | **5 MB** | 469 MB |
+| `gorod` (go-rod 0.116.2, Go) | 0.69s | 0.49 ms | 0.31s | **20 ms** | 13 MB | 385 MB |
+| `chromiumoxide` 0.7 (Rust) | 0.86s | 1.02 ms | 0.38s | **20 ms** | 9 MB | 471 MB |
+| `chromey` 2.x (Rust, maintained chromiumoxide fork) | 0.98s | 1.00 ms | 0.36s | 50 ms | 21 MB | 460 MB |
+| `chromedp` 0.19.1 (Go) | 1.06s | 0.64 ms | 0.48s | **30 ms** | 13 MB | 466 MB |
+| `puppeteer-core` (Node) | 1.06s | 0.89 ms | 0.64s | 0.39 s | 80 MB | 403 MB |
+| `playwright-core` (Node) | 1.24s | 1.39 ms | 0.76s | 0.69 s | 150 MB | 414 MB |
+| `nv-lightpanda` (this repo on Lightpanda, 1 tab) | 0.18s | 0.24 ms | 0.11s | **<10 ms** | 6 MB | 15 MB |
 
-Run [37692160222](https://github.com/andrey-usa/navigera/actions/runs/37692160222)
+Run [37700579931](https://github.com/andrey-usa/navigera/actions/runs/37700579931)
 (2026-10-07, GitHub-hosted `ubuntu-latest`: AMD EPYC 7763 64-Core Processor — 4 vCPU · Chrome: Google Chrome 154.0.8037.97). Every driver produced
 byte-identical extracted data and counts (correctness gate); wall is best-of-N.
 GitHub runners vary between runs, so compare rows within one run.
@@ -161,27 +161,27 @@ artifact ("0.82s vs 0.03s"). Browser memory is the whole browser process
 tree (every renderer/GPU/utility process), sampled as summed PSS every
 250 ms (shared pages counted once).
 
-**Reading the table.** Session wall order: bt-shell 0.29s, bt-brave 0.57s, bt-serve 0.64s, bt-edge 0.69s, gorod 0.71s, chromiumoxide 0.81s, chromey 0.97s, chromedp 0.99s, puppeteer 1.01s, playwright 1.24s. navigera's best
-(bt-shell) ranks #1 of 10; on regular Chrome, bt-serve (0.64s) is ahead of the fastest other driver, gorod (0.71s). All native drivers (navigera,
+**Reading the table.** Session wall order: nv-shell 0.30s, nv-brave 0.60s, nv-serve 0.62s, nv-edge 0.67s, gorod 0.69s, chromiumoxide 0.86s, chromey 0.98s, chromedp 1.06s, puppeteer 1.06s, playwright 1.24s. navigera's best
+(nv-shell) ranks #1 of 10; on regular Chrome, nv-serve (0.62s) is ahead of the fastest other driver, gorod (0.69s). All native drivers (navigera,
 go-rod, chromiumoxide, chromedp) spend tens of milliseconds of their own CPU
 or less; the Node drivers spend hundreds and carry 80–150 MB of their own RSS.
 
 ### Real-world (public internet, best of 3, same run)
 
-example.com goto → title/h1: 10 of 10 pass; bt-shell 0.20s, gorod 0.40s, bt-brave 0.42s, bt-serve 0.43s, chromey 0.46s, bt-edge 0.46s, chromiumoxide 0.47s, chromedp 0.62s, puppeteer 0.74s, playwright 0.84s.
+example.com goto → title/h1: 10 of 10 pass; nv-shell 0.21s, gorod 0.41s, nv-brave 0.42s, nv-serve 0.43s, nv-edge 0.46s, chromey 0.47s, chromiumoxide 0.51s, chromedp 0.63s, puppeteer 0.71s, playwright 0.89s.
 
-GitHub browse (awesome-list scroll + trending click-through): 10 of 10 pass; bt-shell 3.54s, gorod 3.80s, chromiumoxide 3.99s, chromey 4.04s, bt-serve 4.18s, puppeteer 4.30s, bt-brave 4.47s, playwright 4.49s, chromedp 4.79s, bt-edge 5.01s.
+GitHub browse (awesome-list scroll + trending click-through): 10 of 10 pass; nv-shell 3.79s, gorod 3.83s, chromey 4.13s, chromiumoxide 4.22s, nv-serve 4.24s, nv-brave 4.41s, nv-edge 4.48s, puppeteer 4.50s, playwright 4.52s, chromedp 4.67s.
 Live pages change between runs, so these are informational, not part of the
 correctness gate. (The scroll check used to fail at random for every driver:
 GitHub sets CSS `scroll-behavior: smooth`, so `scrollY` was read mid-animation;
 contenders now scroll with `behavior: 'instant'`.)
 
 **chrome-headless-shell** (the same Chrome build without its browser UI
-layer): cold start 0.28s → 0.08s, session 0.64s → 0.29s, browser memory 344 MB → 204 MB.
+layer): cold start 0.30s → 0.09s, session 0.62s → 0.30s, browser memory 365 MB → 198 MB.
 
 **CDP transport A/B** (same build and run): `--remote-debugging-pipe` (default on Linux/macOS)
-vs a DevTools WebSocket port: cold start 0.28s vs 0.28s,
-session 0.64s vs 0.62s. No speed difference: the WebSocket handshake itself is ~10 ms. The pipe is the default for two other reasons:
+vs a DevTools WebSocket port: cold start 0.30s vs 0.28s,
+session 0.62s vs 0.63s. No speed difference: the WebSocket handshake itself is ~10 ms. The pipe is the default for two other reasons:
 it opens no TCP port that another local process could attach to, and Chrome exits when
 navigera dies (EOF on its command pipe), so a killed agent leaks no browser
 (`tests/edge_cases.rs`: over a WebSocket port the browser outlives its driver).
@@ -189,12 +189,12 @@ Windows has no pipe transport here and uses the WebSocket, with a kill-on-close
 job object giving the same guarantee (`killed_session_server_takes_its_browser_down`
 runs there too).
 
-**This build vs the previous one, same machine and run** (`bt-baseline`,
+**This build vs the previous one, same machine and run** (`nv-baseline`,
 built from the previous master by the ladder's `baseline_ref` A/B):
-session 0.65s → 0.64s (-2%), cold start 0.32s → 0.28s (-12%), browser CPU per session 1.18s → 1.14s. The change: Chrome's throwaway profile moved to tmpfs (`/dev/shm`), where its ~210 `fdatasync` calls per launch cost nothing, and close kills the whole browser process tree and deletes the profile without waiting for the kernel to reap Chrome.
+session 0.64s → 0.62s (-4%), cold start 0.29s → 0.30s (+1%), browser CPU per session 1.13s → 1.18s. The change: names only (navigera everywhere), no engine change.
 
-Where navigera's cold start goes (`BT_TIMINGS`, best run): browser up
-134 ms, first page 128 ms, close 5 ms.
+Where navigera's cold start goes (`NAVIGERA_TIMINGS`, best run): browser up
+158 ms, first page 119 ms, close 4 ms.
 
 ### Agent tools (scripted, warm session, best of 3)
 
@@ -204,12 +204,12 @@ persistent connection. Same canonical session plus one page snapshot.
 
 | tool | kind | total wall | mean per step | snapshot | snapshot size | gate |
 |---|---|---|---|---|---|---|
-| `navigera` (this repo) | CLI | 0.81s | 41 ms | 176 ms | 36 KB | ✓ |
-| `navigera` on chrome-headless-shell | CLI | 0.50s | 32 ms | 161 ms | 36 KB | ✓ |
-| `agent-browser` 0.38 (Vercel Labs, Rust) | CLI | 1.30s | 94 ms | 216 ms | 73 KB | ✓ |
-| `playwright-cli` 0.1.22 (Microsoft) | CLI | 10.01s | 798 ms | 440 ms | 50 KB | ✓ |
-| Playwright MCP 0.0.83 (Microsoft) | MCP | 5.34s | 404 ms | 72 ms | 50 KB | ✓ |
-| Chrome DevTools MCP 1.10.1 (Google) | MCP | 3.35s | 203 ms | 104 ms | 40 KB | ✓ |
+| `navigera` (this repo) | CLI | 0.81s | 41 ms | 175 ms | 36 KB | ✓ |
+| `navigera` on chrome-headless-shell | CLI | 0.48s | 31 ms | 153 ms | 36 KB | ✓ |
+| `agent-browser` 0.38 (Vercel Labs, Rust) | CLI | 1.30s | 94 ms | 166 ms | 73 KB | ✓ |
+| `playwright-cli` 0.1.22 (Microsoft) | CLI | 10.01s | 797 ms | 437 ms | 50 KB | ✓ |
+| Playwright MCP 0.0.83 (Microsoft) | MCP | 5.31s | 404 ms | 72 ms | 50 KB | ✓ |
+| Chrome DevTools MCP 1.10.1 (Google) | MCP | 3.33s | 199 ms | 99 ms | 40 KB | ✓ |
 
 Per-step time includes process start (CLI) or JSON-RPC (MCP), the hop to
 the daemon, and the CDP work. playwright-cli and Playwright MCP share Playwright's tool
@@ -258,10 +258,10 @@ runs each, all passed): `ax` now waits for data a page is still fetching,
 and the skill teaches chaining sure steps in one shell call. Median model
 turns 18 → 10, median tokens 288K → 167K; every 0.3.0 run used fewer tokens
 than every 0.2.1 run of the same task (runs
-[37619227942](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619227942)
-vs [37619231246](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619231246)).
+[37619227942](https://github.com/andrey-usa/navigera/actions/runs/37619227942)
+vs [37619231246](https://github.com/andrey-usa/navigera/actions/runs/37619231246)).
 The scripted session didn't slow down: 0.51 s vs 0.49 s, cold start 0.23 s
-both (bench run [37619224427](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619224427)).
+both (bench run [37619224427](https://github.com/andrey-usa/navigera/actions/runs/37619224427)).
 
 **Natural checks** ([`agent-check.yml`](.github/workflows/agent-check.yml),
 every master push, PRs and nightly): Gemini is told in plain words to buy
@@ -282,10 +282,10 @@ history policy.
 
 - `src/protocol.rs`: CLI parsing, the JSON-lines protocol and `Driver` (the `OPS` table is `--help`)
 - `src/browser.rs`: `BrowserSession`: browser discovery (incl. chrome-headless-shell), launch flags, tabs
-- `src/cdp/`: from-scratch CDP engine: pipe/WebSocket transport, JSON-RPC client (`BT_CDP_TRACE`), page ops, `ax.rs` (snapshot tree), `events.rs` (dialogs, popups, navigation), `procjob.rs` (Windows job object)
+- `src/cdp/`: from-scratch CDP engine: pipe/WebSocket transport, JSON-RPC client (`NAVIGERA_CDP_TRACE`), page ops, `ax.rs` (snapshot tree), `events.rs` (dialogs, popups, navigation), `procjob.rs` (Windows job object)
 - `src/session.rs`: named sessions: socket server (Unix socket; loopback TCP + token on Windows), client, detached `start`
 - `src/cdp/attach.rs`: `--attach` (your running browser) and `--profile` (persistent navigera browser)
-- `src/timing.rs`: `BT_TIMINGS=1` launch/close phase timings on stderr
+- `src/timing.rs`: `NAVIGERA_TIMINGS=1` launch/close phase timings on stderr
 - `tests/`: browser e2e: serve protocol, sessions, and the Acme Supply scenario
 - `bench/site/server.py`: Acme Supply, a deterministic local shop (SPA, iframes, shadow DOM, dialogs, popups, login, upload)
 - `bench/ladder/`: driver ladder and agent-tool benchmark (`publish.json` per run, `gen_readme.py`)

@@ -255,7 +255,7 @@ pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) ->
         .args(chrome_flags)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        // Drained by a thread (and copied to $BT_CHROME_LOG): the tail goes
+        // Drained by a thread (and copied to $NAVIGERA_CHROME_LOG): the tail goes
         // into the error when the browser dies.
         .stderr(Stdio::piped());
     // SAFETY: only async-signal-safe calls (fcntl/dup2) between fork and exec.
@@ -308,10 +308,10 @@ fn own_process_group(cmd: &mut Command) {
     let _ = cmd;
 }
 
-/// `BT_CHROME_LOG=<file>`: append the browser's own stderr there (crash
+/// `NAVIGERA_CHROME_LOG=<file>`: append the browser's own stderr there (crash
 /// reasons, sandbox errors) for diagnosing a browser that died mid-session.
 fn chrome_log() -> Option<std::fs::File> {
-    let path = std::env::var_os("BT_CHROME_LOG")?;
+    let path = std::env::var_os("NAVIGERA_CHROME_LOG")?;
     std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
 }
 

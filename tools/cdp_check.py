@@ -4,7 +4,7 @@
 Two sources of truth are compared with the protocol the browser under test
 serves at /json/protocol (so the check is exact for that Chrome version):
 
-  1. the runtime trace (BT_CDP_TRACE=<file>, written while the e2e tests
+  1. the runtime trace (NAVIGERA_CDP_TRACE=<file>, written while the e2e tests
      run): every command actually sent, with its parameter names and short
      string values;
   2. a static scan of src/ for "Domain.name" strings (commands and events

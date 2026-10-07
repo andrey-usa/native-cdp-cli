@@ -5,16 +5,16 @@ name: chrome-bisect
 # environment variants (each repeated), results as one annotation table.
 #
 #   gh workflow run chrome-bisect.yml --ref my-branch -f milestone=151 \
-#     -f variants="baseline;BT_CDP_TRANSPORT=ws;BT_NO_DISCOVER=1;BT_DROP_FLAGS=--no-startup-window"
+#     -f variants="baseline;NAVIGERA_CDP_TRANSPORT=ws;NAVIGERA_NO_DISCOVER=1;NAVIGERA_DROP_FLAGS=--no-startup-window"
 #
 # A workflow_dispatch workflow must exist on the default branch, so on a new
 # branch commit `.github/bisect.env` instead (MILESTONE=, KIND=, TEST=,
 # VARIANTS=, REPEAT=); pushing it runs the bisect. Don't merge that file.
 #
-# Knobs: BT_CDP_TRANSPORT=ws|pipe, BT_NO_DISCOVER=1 (no Target.setDiscoverTargets),
-# BT_NO_NETWORK=1 (no Network.enable, so no fetch/XHR wait before ax),
-# BT_NO_CLICK_CHECK=1 (don't verify that a click's mouse events arrived),
-# BT_DROP_FLAGS=<comma-separated flag prefixes>, BT_EXTRA_FLAGS="<flags>".
+# Knobs: NAVIGERA_CDP_TRANSPORT=ws|pipe, NAVIGERA_NO_DISCOVER=1 (no Target.setDiscoverTargets),
+# NAVIGERA_NO_NETWORK=1 (no Network.enable, so no fetch/XHR wait before ax),
+# NAVIGERA_NO_CLICK_CHECK=1 (don't verify that a click's mouse events arrived),
+# NAVIGERA_DROP_FLAGS=<comma-separated flag prefixes>, NAVIGERA_EXTRA_FLAGS="<flags>".
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ on:
         default: "--test serve_roundtrip"
       variants:
         description: "semicolon-separated env variants; 'baseline' = no extra env"
-        default: "baseline;BT_CDP_TRANSPORT=ws;BT_NO_DISCOVER=1"
+        default: "baseline;NAVIGERA_CDP_TRANSPORT=ws;NAVIGERA_NO_DISCOVER=1"
       repeat:
         description: "runs per variant"
         default: "3"
@@ -87,11 +87,11 @@ jobs:
           IFS=';' read -ra VARS <<< "$VARIANTS"
           for v in "${VARS[@]}"; do
             pass=0; first=""
-            rm -f /tmp/bt-*.log /tmp/nv-*.log
+            rm -f /tmp/nv-*.log
             for i in $(seq $REPEAT); do
               log=/tmp/run.log; rm -f /tmp/chrome.log
               if [ "$v" = "baseline" ]; then envs=(); else read -ra envs <<< "$v"; fi
-              env "${envs[@]}" BT_CHROME_LOG=/tmp/chrome.log cargo test --locked $TEST > $log 2>&1
+              env "${envs[@]}" NAVIGERA_CHROME_LOG=/tmp/chrome.log cargo test --locked $TEST > $log 2>&1
               if [ $? -eq 0 ]; then pass=$((pass+1)); elif [ -z "$first" ]; then
                 first=$( { grep -m1 -E "panicked at|error:" $log; grep -m1 -E "Received signal|Check failed|FATAL" /tmp/chrome.log 2>/dev/null; } | tr '|\n' '/ ' | cut -c1-300)
                 # The whole failure (the scenario's page-state dump) as its own annotation.
@@ -99,7 +99,7 @@ jobs:
                 python3 bench/ladder/annotate.py /tmp/first-failure.md "bisect failure ($v)"
               fi
             done
-            resends=$(cat /tmp/bt-*.log /tmp/nv-*.log 2>/dev/null | grep -c 'did not deliver the mouse events')
+            resends=$(cat /tmp/nv-*.log 2>/dev/null | grep -c 'did not deliver the mouse events')
             echo "| \`$v\` | $pass/$REPEAT | $first | $resends |" >> $out
           done
           cat $out

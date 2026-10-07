@@ -1,5 +1,5 @@
-//! Opt-in phase timings: set `BT_TIMINGS=1` and navigera prints one
-//! `BT_TIMINGS {"phase": ms, ...}` line to stderr when it shuts down.
+//! Opt-in phase timings: set `NAVIGERA_TIMINGS=1` and navigera prints one
+//! `NAVIGERA_TIMINGS {"phase": ms, ...}` line to stderr when it shuts down.
 //!
 //! This is how launch and teardown cost is attributed (spawn → DevTools URL,
 //! WebSocket connect, first page, close) instead of guessed; the benchmark
@@ -10,9 +10,9 @@ use std::time::Instant;
 
 static PHASES: Mutex<Vec<(&'static str, f64)>> = Mutex::new(Vec::new());
 
-/// True when `BT_TIMINGS` is set.
+/// True when `NAVIGERA_TIMINGS` is set.
 pub fn enabled() -> bool {
-    std::env::var_os("BT_TIMINGS").is_some()
+    std::env::var_os("NAVIGERA_TIMINGS").is_some()
 }
 
 /// Record `name` as the time elapsed since `since`.
@@ -35,13 +35,13 @@ pub fn report() {
         .iter()
         .map(|(name, ms)| (name.to_string(), serde_json::json!((ms * 1000.0).round() / 1000.0)))
         .collect();
-    eprintln!("BT_TIMINGS {}", serde_json::Value::Object(map));
+    eprintln!("NAVIGERA_TIMINGS {}", serde_json::Value::Object(map));
 }
 
-/// Diagnostic line on stderr, only with `BT_VERBOSE` set (or `BT_TIMINGS`):
+/// Diagnostic line on stderr, only with `NAVIGERA_VERBOSE` set (or `NAVIGERA_TIMINGS`):
 /// agents read stderr too, so routine launch chatter costs them tokens.
 pub fn log(line: &str) {
-    if std::env::var_os("BT_VERBOSE").is_some() || enabled() {
+    if std::env::var_os("NAVIGERA_VERBOSE").is_some() || enabled() {
         eprintln!("{line}");
     }
 }

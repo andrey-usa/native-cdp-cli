@@ -1,4 +1,4 @@
-# Working on native-cdp-cli — guide for AI agents
+# Working on navigera — guide for AI agents
 
 Read this before your first change. It exists because a full day of agent
 work here went into symptoms (CPU "optimizations" for a measurement bug, 15+
@@ -8,8 +8,8 @@ CI sat red. The rules below are what would have saved that day.
 ## 1. Start every session with state, not code
 
 ```sh
-gh run list -R andrey-usa/native-cdp-cli -w ci -L 3   # is master green?
-gh run list -R andrey-usa/native-cdp-cli -w bench -L 3
+gh run list -R andrey-usa/navigera -w ci -L 3   # is master green?
+gh run list -R andrey-usa/navigera -w bench -L 3
 ```
 
 If master CI is red, fixing it is task #1 — before any feature, benchmark or
@@ -22,7 +22,7 @@ is blocked). Annotations come back through the plain API, so every workflow
 here publishes what you need as annotations:
 
 ```sh
-R=andrey-usa/native-cdp-cli
+R=andrey-usa/navigera
 JOB=$(gh api repos/$R/actions/runs/<run-id>/jobs -q '.jobs[0].id')
 gh api repos/$R/actions/jobs/$JOB -q '.steps[] | "\(.name) = \(.conclusion)"'
 gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
@@ -61,8 +61,8 @@ If something you need isn't there, add an annotation for it (see
    a git ref, so you can still build offline (git to GitHub usually works):
    ```sh
    git fetch origin refs/cache/vendor:refs/cache/vendor
-   mkdir -p ../bt-vendor && git archive refs/cache/vendor | tar -x -C ../bt-vendor
-   mkdir -p ~/.cargo && printf '[source.crates-io]\nreplace-with = "v"\n[source.v]\ndirectory = "%s"\n' "$(cd ../bt-vendor && pwd)/vendor" >> ~/.cargo/config.toml
+   mkdir -p ../nv-vendor && git archive refs/cache/vendor | tar -x -C ../nv-vendor
+   mkdir -p ~/.cargo && printf '[source.crates-io]\nreplace-with = "v"\n[source.v]\ndirectory = "%s"\n' "$(cd ../nv-vendor && pwd)/vendor" >> ~/.cargo/config.toml
    cargo test --offline
    ```
    The ref is refreshed by `vendor.yml` whenever `Cargo.lock` changes.
@@ -72,10 +72,10 @@ If something you need isn't there, add an annotation for it (see
    ```sh
    gh workflow run ci.yml    --ref my-branch                      # ~3 min
    gh workflow run bench.yml --ref my-branch -f reps=1 \
-       -f only=bt-serve,gorod -f scenarios=                        # ~3 min, session gate only
+       -f only=nv-serve,gorod -f scenarios=                        # ~3 min, session gate only
    ```
-   `only` takes any contender names (`bt-serve bt-shell bt-edge bt-brave
-   bt-lightpanda playwright puppeteer chromiumoxide chromey chromedp gorod`);
+   `only` takes any contender names (`nv-serve nv-shell nv-edge nv-brave
+   nv-lightpanda playwright puppeteer chromiumoxide chromey chromedp gorod`);
    `scenarios` is any of `eval,cold,realworld,browse,agent` (empty = the
    session gate only; `agent` = one step per CLI process / MCP call:
    navigera, agent-browser, playwright-cli, Playwright MCP, Chrome
@@ -83,14 +83,14 @@ If something you need isn't there, add an annotation for it (see
 3. **Judge a perf change with an A/B in ONE run.** GitHub runners differ
    between runs by more than most changes are worth, so never compare
    numbers across runs. `baseline_ref` builds a second navigera from any
-   ref and runs it as `bt-baseline` beside your build on the same machine:
+   ref and runs it as `nv-baseline` beside your build on the same machine:
    ```sh
    gh workflow run bench.yml --ref my-branch -f reps=3 \
-       -f only=bt-serve,bt-baseline,gorod -f scenarios=eval,cold \
+       -f only=nv-serve,nv-baseline,gorod -f scenarios=eval,cold \
        -f baseline_ref=master        # branch, tag or full 40-char SHA
    ```
    Every navigera run also reports where its launch time went
-   (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
+   (`NAVIGERA_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
 4. **Windows** has no local loop here (no Windows target in the sandbox):
    `ci.yml`'s `windows` job builds, lints and runs every test on the
    runner's Chrome in ~2 min; compile errors come back as problem-matcher
@@ -107,7 +107,7 @@ If something you need isn't there, add an annotation for it (see
    scripted step now annotates the full error if it recurs.
 5. **Browser compatibility** is part of `ci.yml`: Chrome Stable plus three
    milestones back, chrome-headless-shell and Beta (non-blocking). Each one
-   runs the e2e tests with `BT_CDP_TRACE` and then `tools/cdp_check.py`.
+   runs the e2e tests with `NAVIGERA_CDP_TRACE` and then `tools/cdp_check.py`.
    Before using a new CDP method or parameter, check it exists in the
    *oldest* supported milestone: `bash tools/protocol_dump.sh <chrome> p.json`.
 6. **Agent eval** (`agent-eval.yml`, keys in the `main` environment):
@@ -146,8 +146,8 @@ If something you need isn't there, add an annotation for it (see
   `continue-on-error` and a missing binary shows under "Skipped".
 - **A failure on one Chrome milestone only: bisect it in one run.**
   `chrome-bisect.yml` runs the same test binary on one Chrome for Testing
-  milestone under several env variants (`BT_DROP_FLAGS`, `BT_EXTRA_FLAGS`,
-  `BT_CDP_TRANSPORT=ws|pipe`, `BT_NO_DISCOVER=1`) and annotates a pass/fail
+  milestone under several env variants (`NAVIGERA_DROP_FLAGS`, `NAVIGERA_EXTRA_FLAGS`,
+  `NAVIGERA_CDP_TRANSPORT=ws|pipe`, `NAVIGERA_NO_DISCOVER=1`) and annotates a pass/fail
   table. On a branch, commit `.github/bisect.env` to trigger it (never merge
   that file). Three rounds found that `--disable-features=OptimizationHints`
   segfaults Chrome 151 (runs 37461070056 → 37461788587 → 37464048004).
@@ -158,7 +158,7 @@ If something you need isn't there, add an annotation for it (see
   page saw `visibilitychange` but no pointer event at all after a tab
   switch — Chrome acked `Input.dispatchMouseEvent` without delivering it.
   `click` now checks that the press arrived and resends once (bisect run
-  37626179229: 40/40 with 3 resends logged; `BT_NO_CLICK_CHECK=1` turns the
+  37626179229: 40/40 with 3 resends logged; `NAVIGERA_NO_CLICK_CHECK=1` turns the
   check off). Network.enable was cleared first (37623035163: 20/20 with it,
   19/20 without). `chrome-bisect.yml` annotates each variant's first full
   failure and counts click resends in the session logs.
@@ -171,11 +171,11 @@ If something you need isn't there, add an annotation for it (see
 | adopt Chrome's initial tab instead of creating the first page | no gain: first_page −60 ms but ws_connect +70 ms — Chrome's startup is serialized on its UI thread | 37411020717 |
 | current-thread tokio runtime (no cross-thread hops per round trip) | no gain: engine eval 0.458 vs 0.459 ms | 37411391276 |
 | CDP over `--remote-debugging-pipe` instead of a WebSocket port | no speed gain (pipe 0.31 s cold vs master's WebSocket 0.31 s); kept as default because it opens no TCP port and Chrome exits with its driver (WebSocket leaks the browser: `killed_session_server_takes_its_browser_down`) | 37465364738 |
-| chrome-headless-shell instead of Chrome (`bt-shell`) | session 0.66 → 0.32 s, cold 0.31 → 0.10 s, browser PSS 356 → 228 MB; used when no system Chrome is installed (cache lookup), or via `$CHROME_BIN` | 37465364738 |
+| chrome-headless-shell instead of Chrome (`nv-shell`) | session 0.66 → 0.32 s, cold 0.31 → 0.10 s, browser PSS 356 → 228 MB; used when no system Chrome is installed (cache lookup), or via `$CHROME_BIN` | 37465364738 |
 | new ops, dialog/popup/navigation tracking, text `ax` | no session cost: 0.65 → 0.66 s vs master | 37465364738 |
 | `Network.enable` per tab + `ax`/`screenshot` wait for in-flight fetch/XHR (500 ms quiet, ≤3 s) | no session cost: 0.51 vs 0.49 s, cold 0.23 s both | 37619224427 |
 | that wait + skill line "chain sure steps, end with `ax`" (agent eval, purchase+account ×2) | median turns 18 → 10, tokens 288K → 167K, 4/4 both | 37619227942 vs 37619231246 |
-| throwaway profile on tmpfs (`/dev/shm`; Chrome makes ~210 `fdatasync` calls per cold start) + kill the browser's whole process group + delete the profile while Chrome dies, reap in the background (`src/cdp/profile.rs`, `Browser::close`; `BT_PROFILE_DIR=<dir>` puts the profile elsewhere) | cold 0.26 → 0.24 s (gorod 0.27), session 0.57 → 0.53 s, close 18 → 2 ms; launch itself unchanged on the runner's disk (locally, on a slower disk: cold 288 → 234 ms) | 37690824030 |
+| throwaway profile on tmpfs (`/dev/shm`; Chrome makes ~210 `fdatasync` calls per cold start) + kill the browser's whole process group + delete the profile while Chrome dies, reap in the background (`src/cdp/profile.rs`, `Browser::close`; `NAVIGERA_PROFILE_DIR=<dir>` puts the profile elsewhere) | cold 0.26 → 0.24 s (gorod 0.27), session 0.57 → 0.53 s, close 18 → 2 ms; launch itself unchanged on the runner's disk (locally, on a slower disk: cold 288 → 234 ms) | 37690824030 |
 
 ## 5. Measurement rules
 
@@ -236,11 +236,11 @@ If something you need isn't there, add an annotation for it (see
 
 | path | what |
 |---|---|
-| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation and fetch/XHR state), `ax.rs` (snapshot tree), `attach.rs` (`--attach` endpoint discovery, `--profile` browser), `procjob.rs` (Windows kill-on-close job) |
+| `src/cdp/` | from-scratch CDP engine: transport, client (+`NAVIGERA_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation and fetch/XHR state), `ax.rs` (snapshot tree), `attach.rs` (`--attach` endpoint discovery, `--profile` browser), `procjob.rs` (Windows kill-on-close job) |
 | `src/proc.rs` | detached spawn (session servers, `--profile` browsers) |
 | `src/protocol.rs` | CLI parsing + JSON-lines protocol + `Driver` |
 | `src/session.rs` | named sessions (`--session`, `start`): Unix socket; loopback TCP + token file on Windows |
-| `src/timing.rs` | `BT_TIMINGS=1` phase timings printed at shutdown |
+| `src/timing.rs` | `NAVIGERA_TIMINGS=1` phase timings printed at shutdown |
 | `tests/serve_roundtrip.rs` | serve protocol + named session e2e |
 | `tests/site_scenarios.rs` | realistic end-to-end flow on the Acme site (SPA, iframes, shadow DOM, dialogs, popups, login, upload, slow load) |
 | `tests/attach.rs` | `--attach` / `--profile`: the browser and the user's tabs survive `quit`, cookies persist, one-shot attach refused |

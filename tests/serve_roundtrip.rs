@@ -63,13 +63,13 @@ fn roundtrip(
 
 /// True when the tool itself would find a browser to launch (same resolver
 /// as `navigera`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
-/// caches). `BT_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
+/// caches). `NAVIGERA_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
 /// so a runner without Chrome can't pass the e2e tests by skipping them.
 fn chrome_available() -> bool {
     let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
-        found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
-        "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
+        found || std::env::var_os("NAVIGERA_REQUIRE_BROWSER").is_none(),
+        "NAVIGERA_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
     );
     found
 }
@@ -295,7 +295,7 @@ fn navigera_named_session_across_processes() {
         eprintln!("skipping: no Chrome/Chromium/Edge binary installed");
         return;
     }
-    let socket = std::env::temp_dir().join(format!("bt-test-{}.sock", std::process::id()));
+    let socket = std::env::temp_dir().join(format!("nv-test-{}.sock", std::process::id()));
     let socket = socket.to_str().expect("utf-8 temp path").to_string();
     let s = socket.as_str();
 

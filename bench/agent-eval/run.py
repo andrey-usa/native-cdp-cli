@@ -52,7 +52,7 @@ SITE = REPO / "bench" / "site" / "server.py"
 TOOLS = {
     "navigera": {
         "cmd": "navigera", "skill": "navigera",
-        "repo": "https://github.com/andrey-usa/native-cdp-cli",
+        "repo": "https://github.com/andrey-usa/navigera",
     },
     "agent-browser": {
         "cmd": "agent-browser", "skill": "agent-browser",
@@ -202,16 +202,16 @@ def prepare(tool: str, mode: str, root: Path, args) -> tuple[Path, dict]:
         env["CARGO_HOME"] = str(home / ".cargo")
         env["PATH"] = os.pathsep.join([str(prefix if WINDOWS else prefix / "bin"), str(home / ".cargo" / "bin"),
                                        str(home / ".local" / "bin"), env.get("PATH", "")])
-        if args.bt_bin_dir:
+        if args.nv_bin_dir:
             env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
-                                          if Path(p).resolve() != Path(args.bt_bin_dir).resolve())
+                                          if Path(p).resolve() != Path(args.nv_bin_dir).resolve())
         return work, env
 
     skills = work / ".agents" / "skills"
     skills.mkdir(parents=True)
     if tool == "navigera":
-        if args.bt_bin_dir:
-            env["PATH"] = os.pathsep.join([args.bt_bin_dir, env.get("PATH", "")])
+        if args.nv_bin_dir:
+            env["PATH"] = os.pathsep.join([args.nv_bin_dir, env.get("PATH", "")])
         subprocess.run([exe("navigera", env), "install-skill", "--dir", str(skills)], env=env, check=True,
                        capture_output=True)
     elif tool == "agent-browser":
@@ -562,7 +562,7 @@ def main() -> int:
     ap.add_argument("--gemini", default="gemini")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--run-timeout", type=int, default=900)
-    ap.add_argument("--bt-bin-dir", default=str(REPO / "target" / "release"),
+    ap.add_argument("--nv-bin-dir", default=str(REPO / "target" / "release"),
                     help="directory holding the navigera binary under test")
     ap.add_argument("--out", required=True)
     ap.add_argument("--merge", nargs="*", help="combine these summary-<mode>.json files into --out and exit")

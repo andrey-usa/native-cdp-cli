@@ -191,7 +191,7 @@ pub fn ensure_profile_browser(exe: &str, dir: &Path, headless: bool) -> Result<S
     }
     // The diagnostic knob that adds flags to every launch (CI uses it for
     // Chrome for Testing builds, which ship no setuid sandbox helper).
-    if let Ok(extra) = std::env::var("BT_EXTRA_FLAGS") {
+    if let Ok(extra) = std::env::var("NAVIGERA_EXTRA_FLAGS") {
         cmd.args(extra.split_whitespace());
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());

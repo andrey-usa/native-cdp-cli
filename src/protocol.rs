@@ -1633,7 +1633,7 @@ fn err_response(id: Value, error: String, started: Instant) -> Response {
 }
 
 /// Peak RSS of this process in KB (VmHWM from /proc/self/status), if readable.
-/// Used for the BT_RSS_REPORT diagnostic.
+/// Used for the NAVIGERA_RSS_REPORT diagnostic.
 fn peak_rss_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
@@ -1688,7 +1688,7 @@ pub fn serve(
         if is_quit {
             driver.session().close();
             crate::timing::report();
-            if std::env::var("BT_RSS_REPORT").is_ok() {
+            if std::env::var("NAVIGERA_RSS_REPORT").is_ok() {
                 eprintln!("[navigera] peak RSS at quit: {:?} KB", peak_rss_kb());
             }
             return ExitCode::SUCCESS;
@@ -1698,7 +1698,7 @@ pub fn serve(
     driver.session().close();
     crate::timing::report();
     eprintln!("navigera: stdin closed, session shut down");
-    if std::env::var("BT_RSS_REPORT").is_ok() {
+    if std::env::var("NAVIGERA_RSS_REPORT").is_ok() {
         eprintln!("[navigera] peak RSS at EOF-shutdown: {:?} KB", peak_rss_kb());
     }
     ExitCode::SUCCESS

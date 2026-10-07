@@ -7,7 +7,7 @@ run in CI (`.github/workflows/bench.yml`) on identical hardware.
 
 | contender | driver | runtime |
 |---|---|---|
-| `bt-serve` | `navigera serve` — this repo (RustWright + Chrome) | native, no Node |
+| `nv-serve` | `navigera serve` — this repo (navigera + Chrome) | native, no Node |
 | `playwright` | `playwright-core`, `channel: 'chrome'` | Node |
 | `puppeteer` | `puppeteer-core`, system Chrome | Node |
 | `chromiumoxide` | `chromiumoxide` 0.7 (bench-only crate in `contenders/`) | native Rust |
@@ -39,7 +39,7 @@ Plus two micros: **warm eval round-trip** (200× `() => document.title`) and
 
 * **wall** — best of N, `perf_counter` around the run.
 * **driver CPU / peak RSS** — exact, `os.wait4` on the driver process itself
-  (the `navigera` binary for `bt-serve`, node for the JS contenders).
+  (the `navigera` binary for `nv-serve`, node for the JS contenders).
 * **chrome CPU / peak RSS** — sampled from `/proc` every 50 ms over the
   chrome process tree; approximate, marked `*`.
 * **correctness** — every contender must produce identical normalized

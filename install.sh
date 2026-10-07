@@ -2,14 +2,14 @@
 # Install navigera: a prebuilt binary from the latest GitHub release, or a
 # source build with cargo when no binary fits this platform.
 #
-#   curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/andrey-usa/navigera/master/install.sh | sh
 #
 # Env: NAVIGERA_INSTALL_DIR (default ~/.local/bin), NAVIGERA_VERSION
 # (a tag such as v0.2.0; default: latest release), NAVIGERA_GIT_REV
 # (commit for the source build; default: master).
 set -eu
 
-REPO="andrey-usa/native-cdp-cli"
+REPO="andrey-usa/navigera"
 DIR="${NAVIGERA_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${NAVIGERA_VERSION:-latest}"
 
@@ -33,8 +33,8 @@ mkdir -p "$DIR"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-if [ -n "$target" ] && curl -fsSL --retry 3 -o "$tmp/bt.tar.gz" "$url" 2>/dev/null; then
-  tar -xzf "$tmp/bt.tar.gz" -C "$tmp"
+if [ -n "$target" ] && curl -fsSL --retry 3 -o "$tmp/navigera.tar.gz" "$url" 2>/dev/null; then
+  tar -xzf "$tmp/navigera.tar.gz" -C "$tmp"
   install -m 0755 "$tmp/navigera" "$DIR/navigera"
   echo "installed $DIR/navigera ($target, $VERSION)"
 elif command -v cargo >/dev/null 2>&1; then

@@ -23,8 +23,8 @@ fn python() -> &'static str {
 fn chrome() -> Option<String> {
     let found = navigera::browser::resolve_executable_for(None, true);
     assert!(
-        found.is_some() || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
-        "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
+        found.is_some() || std::env::var_os("NAVIGERA_REQUIRE_BROWSER").is_none(),
+        "NAVIGERA_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
     );
     found
 }
@@ -178,7 +178,7 @@ fn profile_browser_outlives_sessions_and_keeps_cookies() {
     let dir = profile.path().join("p").display().to_string();
     let s = session_name("profile");
     // Chrome for Testing builds (the CI matrix) ship no setuid sandbox.
-    let env = [("BT_EXTRA_FLAGS", "--no-sandbox")];
+    let env = [("NAVIGERA_EXTRA_FLAGS", "--no-sandbox")];
     let start = |s: &str| {
         let (success, r) = run(s, &["start", "--profile", &dir, "--headless"], &env);
         assert!(success && r["ok"] == true, "start --profile: {r}");

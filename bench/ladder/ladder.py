@@ -2,17 +2,17 @@
 """Browser-driver ladder: same scripted session, CDP drivers, one table.
 
 Contenders (each drives the same headless Chrome on the same fixture pages):
-  bt-serve        navigera serve on Chrome (this repo: from-scratch Rust CDP engine)
-  bt-edge         navigera serve on Microsoft Edge
-  bt-brave        navigera serve on Brave
-  bt-lightpanda   navigera serve on Lightpanda (headless Chromium for AI agents)
+  nv-serve        navigera serve on Chrome (this repo: from-scratch Rust CDP engine)
+  nv-edge         navigera serve on Microsoft Edge
+  nv-brave        navigera serve on Brave
+  nv-lightpanda   navigera serve on Lightpanda (headless Chromium for AI agents)
   playwright      playwright-core + channel:chrome (Node)
   puppeteer       puppeteer-core (Node)
   chromiumoxide   chromiumoxide 0.7 (native Rust CDP)
   chromedp        chromedp v0.19.1 (native Go CDP)
   gorod           go-rod v0.116.2 (native Go CDP)
 
-Engine variants (bt-edge/bt-brave/bt-lightpanda) are skipped gracefully when
+Engine variants (nv-edge/nv-brave/nv-lightpanda) are skipped gracefully when
 their binary is not installed (env EDGE_BIN / BRAVE_BIN / lightpanda shim).
 
 Three measurements:
@@ -32,8 +32,8 @@ Accounting (house style, cf. gruppera bench-200m.yml):
     share is still recorded as `cpu_reaped_s` for transparency.
   * driver peak RSS: VmHWM of the driver process itself, sampled every
     20 ms from /proc (VmHWM is monotonic, so the last sample is the peak up
-    to <=20 ms before exit). For bt-* the driver is the `navigera` child
-    of contenders/bt_serve.py, measured the same way there.
+    to <=20 ms before exit). For nv-* the driver is the `navigera` child
+    of contenders/nv_serve.py, measured the same way there.
   * browser CPU / memory: the browser process tree below each driver run
     (found by parent links, so helpers like go-rod's leakless are crossed),
     sampled every 50 ms (PSS every 250 ms): summed CPU deltas and peak summed
@@ -67,23 +67,23 @@ HERE = Path(__file__).resolve().parent
 CONTENDERS = HERE / "contenders"
 FIXTURES = HERE / "fixtures"
 
-# navigera engine variants populated by main(): name -> extra bt_serve.py args.
-# e.g. {"bt-serve": [], "bt-edge": ["--engine", "chrome", "--chromium", "/path"]}
-BT_ENGINE_ARGS: dict[str, list[str]] = {}
+# navigera engine variants populated by main(): name -> extra nv_serve.py args.
+# e.g. {"nv-serve": [], "nv-edge": ["--engine", "chrome", "--chromium", "/path"]}
+NAVIGERA_ENGINE_ARGS: dict[str, list[str]] = {}
 
-# navigera binary per bt-* contender (default $NAVIGERA). The A/B
-# contender `bt-baseline` runs a second build ($NAVIGERA_BASELINE, e.g.
+# navigera binary per nv-* contender (default $NAVIGERA). The A/B
+# contender `nv-baseline` runs a second build ($NAVIGERA_BASELINE, e.g.
 # master) on the same machine in the same run — the only fair way to judge a
 # perf change, since GitHub runners vary between runs.
-BT_BINARY: dict[str, str] = {}
+NAVIGERA_BINARY: dict[str, str] = {}
 
 
 def parse_phases(text: str) -> dict:
-    """navigera's `BT_TIMINGS {...}` shutdown line, if present."""
+    """navigera's `NAVIGERA_TIMINGS {...}` shutdown line, if present."""
     for line in text.splitlines():
-        if line.startswith("BT_TIMINGS "):
+        if line.startswith("NAVIGERA_TIMINGS "):
             try:
-                return json.loads(line[len("BT_TIMINGS "):])
+                return json.loads(line[len("NAVIGERA_TIMINGS "):])
             except ValueError:
                 return {}
     return {}
@@ -95,20 +95,20 @@ SKIPPED: dict[str, str] = {}
 # Experimental contenders: a failure in any stage, or a correctness mismatch,
 # is recorded in the table instead of aborting the ladder. Lightpanda is a
 # single-tab engine and runs the session's second page in the same tab.
-EXPERIMENTAL = {"bt-lightpanda"}
+EXPERIMENTAL = {"nv-lightpanda"}
 NOTES: dict[str, list[str]] = {}
 
 # Process name the sampler should attribute to each contender's browser
 # (Edge/Brave run under their own binary names, not Chrome's).
-BROWSER_TAGS = {"bt-edge": "msedge", "bt-brave": "brave", "bt-lightpanda": "lightpanda",
-                "bt-shell": "chrome-headless-shell"}
+BROWSER_TAGS = {"nv-edge": "msedge", "nv-brave": "brave", "nv-lightpanda": "lightpanda",
+                "nv-shell": "chrome-headless-shell"}
 
 OPTIONAL_SCENARIOS = ("eval", "cold", "realworld", "browse", "agent")
 
 
-def is_bt(name: str) -> bool:
-    """True for navigera contenders (bt-serve, bt-edge, ...)."""
-    return name in BT_ENGINE_ARGS
+def is_nv(name: str) -> bool:
+    """True for navigera contenders (nv-serve, nv-edge, ...)."""
+    return name in NAVIGERA_ENGINE_ARGS
 
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 
@@ -140,7 +140,7 @@ def chrome_pids(chrome_tag: str) -> list[int]:
             continue
         # Match the browser binary itself (all contenders launch the same
         # chrome); renderer/utility children carry the same basename.
-        # Playwright launches with --remote-debugging-pipe, rustwright with
+        # Contenders launch with --remote-debugging-pipe or
         # --remote-debugging-port, so don't filter on either.
         argv0 = cmd.split(" ", 1)[0]
         if argv0 == chrome_tag or argv0.endswith("/" + chrome_tag):
@@ -190,7 +190,7 @@ def proc_table() -> dict[int, tuple[int, str]]:
 
 def browser_descendants(root: int, table: dict[int, tuple[int, str]]) -> list[int]:
     """Browser processes anywhere below `root` (through helpers like go-rod's
-    leakless or bt_serve.py -> navigera)."""
+    leakless or nv_serve.py -> navigera)."""
     kids: dict[int, list[int]] = {}
     for pid, (ppid, _) in table.items():
         kids.setdefault(ppid, []).append(pid)
@@ -419,18 +419,18 @@ def bench_session(name: str, argv: list[str], env: dict, out_dir: Path,
             "LADDER_EXTRACT_OUT": str(extract),
             "LADDER_SHOT_OUT": str(shot),
         }
-        if is_bt(name):
+        if is_nv(name):
             run_env["LADDER_STATS_OUT"] = str(stats)
-            cmd = [sys.executable, str(CONTENDERS / "bt_serve.py"),
+            cmd = [sys.executable, str(CONTENDERS / "nv_serve.py"),
                    "--mode", "session", "--stats-out", str(stats),
                    "--extract-out", str(extract), "--shot-out", str(shot),
-                   *BT_ENGINE_ARGS[name]]
+                   *NAVIGERA_ENGINE_ARGS[name]]
         else:
             cmd = argv
         detail: dict = {}
         wall, cpu, rss, out = run_once(cmd, run_env, timeout_s, chrome_tag, detail)
-        if is_bt(name):
-            # navigera's own CPU/RSS come from bt_serve.py, which measures
+        if is_nv(name):
+            # navigera's own CPU/RSS come from nv_serve.py, which measures
             # its navigera child exactly like run_once measures drivers.
             with open(stats, encoding="utf-8") as f:
                 bst = json.load(f)
@@ -466,16 +466,16 @@ def bench_eval(name: str, argv: list[str], env: dict, out_dir: Path,
     for rep in range(3):
         stats = out_dir / f"evalstats-{name}-r{rep}.json"
         run_env = {**env, "LADDER_N_EVAL": "200"}
-        if is_bt(name):
+        if is_nv(name):
             run_env["LADDER_STATS_OUT"] = str(stats)
-            cmd = [sys.executable, str(CONTENDERS / "bt_serve.py"),
+            cmd = [sys.executable, str(CONTENDERS / "nv_serve.py"),
                    "--mode", "eval", "--stats-out", str(stats), "--n-eval", "200",
-                   *BT_ENGINE_ARGS[name]]
+                   *NAVIGERA_ENGINE_ARGS[name]]
         else:
             cmd = argv + ["eval"]
         wall, cpu, rss, out = run_once(cmd, run_env, timeout_s, chrome_tag)
         engine: list[float] = []
-        if is_bt(name):
+        if is_nv(name):
             with open(stats, encoding="utf-8") as f:
                 st = json.load(f)
             lat = st["eval_ms"]
@@ -508,10 +508,10 @@ def bench_realworld(name: str, argv: list[str], env: dict, out_dir: Path,
     for rep in range(3):
         stats = out_dir / f"realworld-{name}-r{rep}.json"
         run_env = {**env, "LADDER_STATS_OUT": str(stats)}
-        if is_bt(name):
-            cmd = [sys.executable, str(CONTENDERS / "bt_serve.py"),
+        if is_nv(name):
+            cmd = [sys.executable, str(CONTENDERS / "nv_serve.py"),
                    "--mode", "realworld", "--stats-out", str(stats),
-                   *BT_ENGINE_ARGS[name]]
+                   *NAVIGERA_ENGINE_ARGS[name]]
         else:
             cmd = argv + ["realworld"]
         try:
@@ -521,7 +521,7 @@ def bench_realworld(name: str, argv: list[str], env: dict, out_dir: Path,
             runs.append({"wall_s": float("nan"), "cpu_s": float("nan"),
                          "maxrss_kb": 0, "ok": False, "title": None, "h1": None})
             continue
-        if is_bt(name):
+        if is_nv(name):
             with open(stats, encoding="utf-8") as f:
                 rw = json.load(f)["realworld"]
         else:
@@ -552,10 +552,10 @@ def bench_browse(name: str, argv: list[str], env: dict, out_dir: Path,
     for rep in range(3):
         stats = out_dir / f"browse-{name}-r{rep}.json"
         run_env = {**env, "LADDER_STATS_OUT": str(stats)}
-        if is_bt(name):
-            cmd = [sys.executable, str(CONTENDERS / "bt_serve.py"),
+        if is_nv(name):
+            cmd = [sys.executable, str(CONTENDERS / "nv_serve.py"),
                    "--mode", "browse", "--stats-out", str(stats),
-                   *BT_ENGINE_ARGS[name]]
+                   *NAVIGERA_ENGINE_ARGS[name]]
         else:
             cmd = argv + ["browse"]
         try:
@@ -565,7 +565,7 @@ def bench_browse(name: str, argv: list[str], env: dict, out_dir: Path,
             runs.append({"wall_s": float("nan"), "cpu_s": float("nan"),
                          "maxrss_kb": 0, "ok": False})
             continue
-        if is_bt(name):
+        if is_nv(name):
             with open(stats, encoding="utf-8") as f:
                 facts = json.load(f)["realworld"]["facts"]
         else:
@@ -623,16 +623,16 @@ def bench_cold(name: str, argv: list[str], env: dict, chrome_tag: str) -> dict:
     """Cold start: launch -> new page -> one eval -> close. Best of 5."""
     runs = []
     for rep in range(5):
-        if is_bt(name):
+        if is_nv(name):
             # one-shot mode: process start + browser launch + one eval + close
-            # (bt_serve.py-only args like --navigera don't apply here)
-            extra = [a for a in BT_ENGINE_ARGS[name] if a not in ("--navigera", BT_BINARY.get(name))]
-            cmd = [BT_BINARY.get(name, env["NAVIGERA"]), "eval", "--expression",
+            # (nv_serve.py-only args like --navigera don't apply here)
+            extra = [a for a in NAVIGERA_ENGINE_ARGS[name] if a not in ("--navigera", NAVIGERA_BINARY.get(name))]
+            cmd = [NAVIGERA_BINARY.get(name, env["NAVIGERA"]), "eval", "--expression",
                    "() => 1 + 1", *extra]
-            # bt-serve / bt-baseline (chrome) need --chromium; variants carry it
-            if name in ("bt-serve", "bt-baseline"):
+            # nv-serve / nv-baseline (chrome) need --chromium; variants carry it
+            if name in ("nv-serve", "nv-baseline"):
                 cmd += ["--chromium", env["CHROME_BIN"]]
-            run_env = {**env, "BT_TIMINGS": "1"}
+            run_env = {**env, "NAVIGERA_TIMINGS": "1"}
         else:
             cmd = argv + ["cold"]
             run_env = env
@@ -831,7 +831,7 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--only", default="",
                     help="comma-separated contenders to run (default: all), "
-                         "e.g. bt-serve,gorod — for fast, narrow CI iterations")
+                         "e.g. nv-serve,gorod — for fast, narrow CI iterations")
     ap.add_argument("--scenarios", default=",".join(OPTIONAL_SCENARIOS),
                     help="optional stages besides the always-on session gate: "
                          + ",".join(OPTIONAL_SCENARIOS))
@@ -870,39 +870,39 @@ def main() -> int:
     node_dir = CONTENDERS
     # navigera engine variants: name -> (engine flag, env var for binary).
     # Variants are skipped gracefully when their binary is unavailable.
-    BT_ENGINES = {
-        "bt-serve": ("chrome", "CHROME_BIN"),
-        "bt-baseline": ("chrome", "CHROME_BIN"),
-        "bt-edge": ("chrome", "EDGE_BIN"),
-        "bt-brave": ("chrome", "BRAVE_BIN"),
-        "bt-shell": ("chrome", "SHELL_BIN"),
+    NAVIGERA_ENGINES = {
+        "nv-serve": ("chrome", "CHROME_BIN"),
+        "nv-baseline": ("chrome", "CHROME_BIN"),
+        "nv-edge": ("chrome", "EDGE_BIN"),
+        "nv-brave": ("chrome", "BRAVE_BIN"),
+        "nv-shell": ("chrome", "SHELL_BIN"),
         # A/B of the CDP transport in one run: same build over a DevTools
         # WebSocket port instead of the default --remote-debugging-pipe.
-        "bt-ws": ("chrome", "CHROME_BIN"),
-        "bt-lightpanda": ("lightpanda", None),
+        "nv-ws": ("chrome", "CHROME_BIN"),
+        "nv-lightpanda": ("lightpanda", None),
     }
     contenders: dict[str, list[str]] = {}
-    bt_engine_args: dict[str, list[str]] = {}
-    for bt_name, (engine, bin_env) in BT_ENGINES.items():
-        BT_BINARY[bt_name] = navigera
-        if bt_name == "bt-baseline":
+    nv_engine_args: dict[str, list[str]] = {}
+    for nv_name, (engine, bin_env) in NAVIGERA_ENGINES.items():
+        NAVIGERA_BINARY[nv_name] = navigera
+        if nv_name == "nv-baseline":
             baseline = os.environ.get("NAVIGERA_BASELINE")
             if not baseline or not Path(baseline).exists():
                 continue  # A/B only on request; not "skipped"
-            BT_BINARY[bt_name] = baseline
-            contenders[bt_name] = []
-            BT_ENGINE_ARGS[bt_name] = ["--navigera", baseline]
+            NAVIGERA_BINARY[nv_name] = baseline
+            contenders[nv_name] = []
+            NAVIGERA_ENGINE_ARGS[nv_name] = ["--navigera", baseline]
             continue
         if bin_env is not None:
             binary = os.environ.get(bin_env)
             if not binary or not Path(binary).exists():
-                print(f"== {bt_name}: skipped (no binary: {bin_env}={binary})", flush=True)
-                SKIPPED[bt_name] = f"no binary ({bin_env}={binary})"
+                print(f"== {nv_name}: skipped (no binary: {bin_env}={binary})", flush=True)
+                SKIPPED[nv_name] = f"no binary ({bin_env}={binary})"
                 continue
-            # bt-serve (chrome) uses CHROME_BIN via env; others pass explicitly
-            if bt_name == "bt-serve":
+            # nv-serve (chrome) uses CHROME_BIN via env; others pass explicitly
+            if nv_name == "nv-serve":
                 args_extra = []
-            elif bt_name == "bt-ws":
+            elif nv_name == "nv-ws":
                 args_extra = ["--transport", "ws"]
             else:
                 args_extra = ["--engine", engine, "--chromium", binary]
@@ -921,12 +921,12 @@ def main() -> int:
                 except Exception:
                     lp_ok = False
             if not lp_ok:
-                print("== bt-lightpanda: skipped (no working lightpanda binary)", flush=True)
-                SKIPPED[bt_name] = "no working lightpanda binary"
+                print("== nv-lightpanda: skipped (no working lightpanda binary)", flush=True)
+                SKIPPED[nv_name] = "no working lightpanda binary"
                 continue
             args_extra = ["--engine", engine]
-        contenders[bt_name] = []
-        BT_ENGINE_ARGS[bt_name] = args_extra
+        contenders[nv_name] = []
+        NAVIGERA_ENGINE_ARGS[nv_name] = args_extra
     contenders.update({
         "playwright": ["node", str(node_dir / "contender_playwright.mjs")],
         "puppeteer": ["node", str(node_dir / "contender_puppeteer.mjs")],
@@ -954,7 +954,7 @@ def main() -> int:
         for name in list(contenders):
             if name not in only:
                 contenders.pop(name)
-                BT_ENGINE_ARGS.pop(name, None)
+                NAVIGERA_ENGINE_ARGS.pop(name, None)
 
     # Warm each browser binary once (page cache, font cache, first-run
     # profile work) so the first contender doesn't absorb a cold-start
@@ -980,14 +980,14 @@ def main() -> int:
         # reason in the table) instead of failing the whole ladder.
         try:
             print(f"== {name}: session (x{args.reps})", flush=True)
-            session = bench_session(name, argv + (["session"] if not is_bt(name) else []),
+            session = bench_session(name, argv + (["session"] if not is_nv(name) else []),
                                     env, out_dir, args.reps, tag, 180)
         except Exception as e:
             if name in EXPERIMENTAL:
                 print(f"== {name}: SKIPPED (session failed: {e})", flush=True)
                 # Tail of the error: where navigera's own message lands.
                 SKIPPED[name] = " ".join(str(e).split())[-700:]
-                BT_ENGINE_ARGS.pop(name, None)
+                NAVIGERA_ENGINE_ARGS.pop(name, None)
                 contenders.pop(name)
                 continue
             raise
@@ -1021,13 +1021,13 @@ def main() -> int:
     if "agent" in scenarios:
         import shutil
         tools: dict[str, list[str]] = {}
-        if "bt-serve" in contenders:
-            tools["navigera"] = ["--tool", "bt"]
+        if "nv-serve" in contenders:
+            tools["navigera"] = ["--tool", "nv"]
         # `--only` narrows the main contenders; the agent scenario always
         # runs every agent CLI that is installed.
         shell = os.environ.get("SHELL_BIN")
-        if "bt-serve" in contenders and shell and Path(shell).exists():
-            tools["navigera (headless shell)"] = ["--tool", "bt", "--chrome", shell]
+        if "nv-serve" in contenders and shell and Path(shell).exists():
+            tools["navigera (headless shell)"] = ["--tool", "nv", "--chrome", shell]
         for label, tool, env_var, binary, hint in [
             ("agent-browser", "ab", "AGENT_BROWSER", "agent-browser", "npm i -g agent-browser"),
             ("playwright-cli", "pw", "PLAYWRIGHT_CLI", "playwright-cli", "npm i -g @playwright/cli"),
@@ -1146,7 +1146,7 @@ def main() -> int:
                   if results[n].get("cold") and (results[n]["cold"]["best"].get("phases"))]
     if phase_rows:
         keys = ["devtools_url", "ws_connect", "browser_up", "first_page", "launch_total", "close"]
-        lines.append("### navigera cold-start phases (ms, best run; `BT_TIMINGS`)")
+        lines.append("### navigera cold-start phases (ms, best run; `NAVIGERA_TIMINGS`)")
         lines.append("")
         lines.append("| contender | " + " | ".join(keys) + " |")
         lines.append("|---|" + "---|" * len(keys))

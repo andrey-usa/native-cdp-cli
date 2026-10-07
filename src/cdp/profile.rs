@@ -11,7 +11,7 @@
 //! `/dev/shm` is used only when it is tmpfs with room to spare (Docker's
 //! default is 64 MB), and creating the directory there must succeed (some
 //! sandboxes deny it); otherwise the profile goes to the system temp
-//! directory as before. `BT_PROFILE_DIR=<dir>` picks the parent directory
+//! directory as before. `NAVIGERA_PROFILE_DIR=<dir>` picks the parent directory
 //! explicitly (diagnostics and A/B runs).
 //!
 //! A profile in RAM must not outlive its owner: a session server killed with
@@ -38,12 +38,12 @@ const SHM_MIN_FREE: u64 = 512 << 20;
 
 /// A fresh, empty profile directory, deleted when dropped.
 pub fn temp_profile() -> Result<tempfile::TempDir> {
-    let dir = match std::env::var_os("BT_PROFILE_DIR") {
+    let dir = match std::env::var_os("NAVIGERA_PROFILE_DIR") {
         Some(base) => {
             let base = PathBuf::from(base);
             sweep_stale(&base);
             new_dir(Some(&base))
-                .with_context(|| format!("create a browser profile in BT_PROFILE_DIR={}", base.display()))?
+                .with_context(|| format!("create a browser profile in NAVIGERA_PROFILE_DIR={}", base.display()))?
         }
         None => match shm_profile() {
             Some(dir) => dir,
@@ -238,9 +238,9 @@ mod tests {
     fn explicit_parent_directory_is_honoured() {
         let base = tempfile::tempdir().unwrap();
         // Env vars are process-wide: only this test sets this one.
-        std::env::set_var("BT_PROFILE_DIR", base.path());
+        std::env::set_var("NAVIGERA_PROFILE_DIR", base.path());
         let p = temp_profile();
-        std::env::remove_var("BT_PROFILE_DIR");
+        std::env::remove_var("NAVIGERA_PROFILE_DIR");
         let p = p.unwrap();
         assert_eq!(p.path().parent(), Some(base.path()));
         assert!(p.path().file_name().unwrap().to_string_lossy().starts_with(PREFIX));

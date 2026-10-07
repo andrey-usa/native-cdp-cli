@@ -278,7 +278,7 @@ impl CdpClient {
     }
 }
 
-/// `BT_CDP_TRACE=<file>`: append every CDP command this process sends as one
+/// `NAVIGERA_CDP_TRACE=<file>`: append every CDP command this process sends as one
 /// JSON line `{"method", "params"}` with values reduced to their shape
 /// (short strings kept so enum values can be checked). CI validates the
 /// trace against the running browser's own `/json/protocol`
@@ -288,7 +288,7 @@ fn trace(method: &str, params: &Value) {
     use std::io::Write as _;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| {
-        let path = std::env::var_os("BT_CDP_TRACE")?;
+        let path = std::env::var_os("NAVIGERA_CDP_TRACE")?;
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)

@@ -18,12 +18,12 @@ fn python() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
-/// Same resolver as the tool; `BT_REQUIRE_BROWSER=1` (CI) forbids skipping.
+/// Same resolver as the tool; `NAVIGERA_REQUIRE_BROWSER=1` (CI) forbids skipping.
 fn chrome_available() -> bool {
     let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
-        found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
-        "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
+        found || std::env::var_os("NAVIGERA_REQUIRE_BROWSER").is_none(),
+        "NAVIGERA_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
     );
     found
 }
@@ -66,7 +66,7 @@ struct Session {
 impl Session {
     fn start(test: &str) -> Session {
         let name = std::env::temp_dir()
-            .join(format!("bt-edge-{test}-{}.sock", std::process::id()))
+            .join(format!("nv-edge-{test}-{}.sock", std::process::id()))
             .display()
             .to_string();
         let s = Session { name };
@@ -273,7 +273,7 @@ fn relative_paths_resolve_in_the_callers_directory() {
     }
     let site = start_site();
     let s = Session::start("paths");
-    let dir = std::env::temp_dir().join(format!("bt-edge-cwd-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nv-edge-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.txt"), "hello").unwrap();
     s.ok(&["goto", &format!("{}/upload", site.base)]);
@@ -409,7 +409,7 @@ fn killed_session_server_takes_its_browser_down() {
     }
     let out = Command::new(tool_exe())
         .args(["eval", "--expression", "() => 1"])
-        .env("BT_VERBOSE", "1")
+        .env("NAVIGERA_VERBOSE", "1")
         .stdin(Stdio::null())
         .output()
         .expect("one-shot eval");
@@ -453,7 +453,7 @@ fn killed_session_server_takes_its_browser_down() {
     }
     let s = Session {
         name: std::env::temp_dir()
-            .join(format!("bt-edge-orphan-{}.sock", std::process::id()))
+            .join(format!("nv-edge-orphan-{}.sock", std::process::id()))
             .display()
             .to_string(),
     };
@@ -523,7 +523,7 @@ fn click_right_after_switching_tabs_lands() {
     }
     let site = start_site();
     let s = Session::start("tabs");
-    let shot = std::env::temp_dir().join(format!("bt-tabs-{}.png", std::process::id()));
+    let shot = std::env::temp_dir().join(format!("nv-tabs-{}.png", std::process::id()));
     let shot = shot.to_str().unwrap();
     let rounds = 15;
     for i in 0..rounds {

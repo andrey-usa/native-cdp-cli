@@ -1,7 +1,7 @@
 # Install navigera on Windows: the prebuilt binary from the latest GitHub
 # release, or a source build with cargo when no binary is published.
 #
-#   irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/andrey-usa/navigera/master/install.ps1 | iex
 #
 # Env: NAVIGERA_INSTALL_DIR (default %LOCALAPPDATA%\navigera\bin),
 # NAVIGERA_VERSION (a tag such as v0.3.0; default: latest release),
@@ -16,7 +16,7 @@
     $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is slow with it
     # Windows PowerShell 5.1 may still default to TLS 1.0; GitHub needs 1.2.
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $repo = 'andrey-usa/native-cdp-cli'
+    $repo = 'andrey-usa/navigera'
     $dir = if ($env:NAVIGERA_INSTALL_DIR) { $env:NAVIGERA_INSTALL_DIR } `
            else { Join-Path $env:LOCALAPPDATA 'navigera\bin' }
     $version = if ($env:NAVIGERA_VERSION) { $env:NAVIGERA_VERSION } else { 'latest' }

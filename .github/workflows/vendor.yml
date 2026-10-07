@@ -6,7 +6,7 @@ name: vendor
 # build and run the browser e2e tests offline:
 #
 #   git fetch origin refs/cache/vendor:refs/cache/vendor
-#   git worktree add ../bt-vendor refs/cache/vendor   # or: git archive | tar x
+#   git worktree add ../nv-vendor refs/cache/vendor   # or: git archive | tar x
 #   # then point cargo at it, see AGENTS.md "Offline builds"
 
 on:

@@ -28,13 +28,13 @@ fn python() -> &'static str {
 
 /// True when the tool itself would find a browser to launch (same resolver
 /// as `navigera`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
-/// caches). `BT_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
+/// caches). `NAVIGERA_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
 /// so a runner without Chrome can't pass the e2e tests by skipping them.
 fn chrome_available() -> bool {
     let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
-        found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
-        "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
+        found || std::env::var_os("NAVIGERA_REQUIRE_BROWSER").is_none(),
+        "NAVIGERA_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
     );
     found
 }
@@ -199,7 +199,7 @@ fn acme_supply_shopping_docs_login_support() {
     let url = |path: &str| format!("{base}{path}");
     let agent = Agent {
         session: std::env::temp_dir()
-            .join(format!("bt-site-{}.sock", std::process::id()))
+            .join(format!("nv-site-{}.sock", std::process::id()))
             .display()
             .to_string(),
         history: std::cell::RefCell::new(Some(Vec::new())),
@@ -335,7 +335,7 @@ fn acme_supply_shopping_docs_login_support() {
     assert!(state["url"].as_str().unwrap().ends_with("/account"), "form POST + 303: {state}");
     agent.ok(&["reload"]);
     agent.ok(&["eval", "--expression", EVENT_LOG_JS]);
-    let shot = std::env::temp_dir().join(format!("bt-shot-{}.png", std::process::id()));
+    let shot = std::env::temp_dir().join(format!("nv-shot-{}.png", std::process::id()));
     let png = agent.ok(&["screenshot", shot.to_str().unwrap()]);
     assert!(png["bytes"].as_u64().unwrap() > 1000, "{png}");
     let _ = std::fs::remove_file(&shot);
@@ -354,7 +354,7 @@ fn acme_supply_shopping_docs_login_support() {
     agent.ok(&["select", &find_ref(&support, "combobox \"Category\""), "Billing"]);
     agent.ok(&["click", &find_ref(&support, "radio \"High\"")]);
     agent.ok(&["fill", &find_ref(&support, "textbox \"Message\""), "Charged twice for order A-1042"]);
-    let file = std::env::temp_dir().join(format!("bt-upload-{}.txt", std::process::id()));
+    let file = std::env::temp_dir().join(format!("nv-upload-{}.txt", std::process::id()));
     std::fs::write(&file, "receipt").unwrap();
     agent.ok(&["upload", &find_ref(&support, "Attachment"), file.to_str().unwrap()]);
     agent.ok(&["click", &find_ref(&support, "button \"Submit request\"")]);

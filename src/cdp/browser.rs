@@ -203,7 +203,7 @@ impl Browser {
         // Popups (`target=_blank`, `window.open`) announce themselves as
         // `Target.targetCreated` with an `openerId`; the session adopts them
         // as tabs. One round trip, before any page exists.
-        if std::env::var_os("BT_NO_DISCOVER").is_none() {
+        if std::env::var_os("NAVIGERA_NO_DISCOVER").is_none() {
             let _ = handle.block_on(client.send(
                 "Target.setDiscoverTargets",
                 json!({ "discover": true }),

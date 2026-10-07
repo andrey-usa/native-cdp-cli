@@ -10,7 +10,7 @@ title, rows) plus one accessibility snapshot, the agent's usual way to look
 at a page.
 
 Tools:
-  bt      navigera --session <name> <op>          (Rust, this repo)
+  nv      navigera --session <name> <op>          (Rust, this repo)
   ab      agent-browser --session <name> --json <op>  (Vercel Labs, Rust daemon)
   pw      playwright-cli -s=<name> <op>               (Microsoft, Playwright daemon)
   pwmcp   @playwright/mcp over stdio                   (Microsoft, MCP)
@@ -29,7 +29,7 @@ import sys
 import tempfile
 import time
 
-# Same expressions as bt_serve.py, written as IIFEs so a tool that evaluates
+# Same expressions as nv_serve.py, written as IIFEs so a tool that evaluates
 # the expression as-is (rather than calling a returned function) gets values.
 TITLE = "(() => document.title)()"
 CARDS = "(() => document.querySelectorAll('.card').length)()"
@@ -55,7 +55,7 @@ def result_of(tool: str, out: str):
     if tool == "pw":
         return json.loads(out) if out.strip() else None
     doc = json.loads(out.strip().splitlines()[-1])
-    if tool == "bt":
+    if tool == "nv":
         if not doc.get("ok"):
             raise RuntimeError(f"navigera error: {doc.get('error')}")
         return doc.get("result")
@@ -148,7 +148,7 @@ def uid_for(snapshot: str, pattern: str) -> str:
 def run_cli(tool: str, args, base: str, env: dict):
     s = args.session
     cwd = None
-    if tool == "bt":
+    if tool == "nv":
         exe = os.environ["NAVIGERA"]
 
         def cmd(*a):
@@ -344,7 +344,7 @@ def run_mcp(tool: str, args, base: str, env: dict):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tool", choices=["bt", "ab", "pw", "pwmcp", "cdmcp"], required=True)
+    ap.add_argument("--tool", choices=["nv", "ab", "pw", "pwmcp", "cdmcp"], required=True)
     ap.add_argument("--extract-out", required=True)
     ap.add_argument("--shot-out", required=True)
     ap.add_argument("--chrome", help="browser binary (default $CHROME_BIN)")

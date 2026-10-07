@@ -11,10 +11,10 @@ A single native binary that drives Chrome over the DevTools Protocol. Use it
 ## Setup (once)
 
 ```bash
-navigera --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
+navigera --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/navigera/master/install.sh | sh
 ```
 
-Windows (PowerShell): `irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex`.
+Windows (PowerShell): `irm https://raw.githubusercontent.com/andrey-usa/navigera/master/install.ps1 | iex`.
 The commands below work the same there; quote JavaScript that contains `$`
 with single quotes in PowerShell.
 

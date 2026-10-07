@@ -74,10 +74,10 @@ const CHROME_FLAGS: &[&str] = &[
 
 /// [`CHROME_FLAGS`] adjusted by two diagnostic knobs, for bisecting a
 /// browser-version-specific failure in CI without a rebuild:
-/// `BT_DROP_FLAGS` (comma-separated prefixes to remove) and
-/// `BT_EXTRA_FLAGS` (space-separated flags to add).
+/// `NAVIGERA_DROP_FLAGS` (comma-separated prefixes to remove) and
+/// `NAVIGERA_EXTRA_FLAGS` (space-separated flags to add).
 fn chrome_flags() -> Vec<String> {
-    let drop: Vec<String> = std::env::var("BT_DROP_FLAGS")
+    let drop: Vec<String> = std::env::var("NAVIGERA_DROP_FLAGS")
         .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
         .unwrap_or_default();
     let mut flags: Vec<String> = CHROME_FLAGS
@@ -85,7 +85,7 @@ fn chrome_flags() -> Vec<String> {
         .filter(|f| !drop.iter().any(|d| f.starts_with(d.as_str())))
         .map(|f| f.to_string())
         .collect();
-    if let Ok(extra) = std::env::var("BT_EXTRA_FLAGS") {
+    if let Ok(extra) = std::env::var("NAVIGERA_EXTRA_FLAGS") {
         flags.extend(extra.split_whitespace().map(str::to_string));
     }
     flags
@@ -180,10 +180,8 @@ fn cached_browsers(headless: bool) -> Vec<String> {
 }
 
 /// Resolve which executable to launch, honoring (in order) an explicit CLI
-/// override, `$NAVIGERA_CHROMIUM` (or the pre-0.3 `$BROWSER_TOOL_CHROMIUM`)
-/// / `$CDP_CLI_CHROMIUM` / `$RUSTWRIGHT_CHROMIUM` / `$CHROME_BIN`, the
-/// common install paths, then
-/// browsers cached by Playwright/Puppeteer.
+/// override, `$NAVIGERA_CHROMIUM` / `$CHROME_BIN`, the common install
+/// paths, then browsers cached by Playwright/Puppeteer.
 pub fn resolve_executable(cli_override: Option<&str>) -> Option<String> {
     resolve_executable_for(cli_override, true)
 }
@@ -195,7 +193,7 @@ pub fn resolve_executable_for(cli_override: Option<&str>, headless: bool) -> Opt
             return Some(path.to_string());
         }
     }
-    for var in ["NAVIGERA_CHROMIUM", "BROWSER_TOOL_CHROMIUM", "CDP_CLI_CHROMIUM", "RUSTWRIGHT_CHROMIUM", "CHROME_BIN"] {
+    for var in ["NAVIGERA_CHROMIUM", "CHROME_BIN"] {
         if let Ok(path) = std::env::var(var) {
             if !path.trim().is_empty() {
                 return Some(path);
@@ -340,7 +338,7 @@ impl BrowserSession {
     ) -> Result<Self> {
         let transport = transport
             .map(str::to_string)
-            .or_else(|| std::env::var("BT_CDP_TRANSPORT").ok())
+            .or_else(|| std::env::var("NAVIGERA_CDP_TRANSPORT").ok())
             .unwrap_or_else(|| DEFAULT_TRANSPORT.into());
         if !matches!(transport.as_str(), "pipe" | "ws") {
             bail!("--transport takes pipe|ws, got {transport:?}");

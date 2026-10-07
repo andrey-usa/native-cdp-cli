@@ -27,8 +27,8 @@ jobs:
 
       - name: Tests (unit + browser e2e on the runner's Chrome, CDP traced)
         env:
-          BT_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
-          BT_REQUIRE_BROWSER: "1"
+          NAVIGERA_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
+          NAVIGERA_REQUIRE_BROWSER: "1"
         run: |
           set -o pipefail
           if ! cargo test --locked --no-fail-fast 2>&1 | tee /tmp/test.log; then
@@ -80,8 +80,8 @@ jobs:
           python-version: "3.12"
       - name: Tests (unit + browser e2e on the runner's Chrome, CDP traced)
         env:
-          BT_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
-          BT_REQUIRE_BROWSER: "1"
+          NAVIGERA_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
+          NAVIGERA_REQUIRE_BROWSER: "1"
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/test.log"
@@ -187,17 +187,17 @@ jobs:
           echo "CHROME_BIN=/tmp/browser/${{ matrix.browser.exe }}" >> "$GITHUB_ENV"
       - name: e2e tests (CDP traced)
         env:
-          BT_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
-          BT_REQUIRE_BROWSER: "1"
-          BT_CHROME_LOG: ${{ runner.temp }}/chrome.log
+          NAVIGERA_CDP_TRACE: ${{ runner.temp }}/cdp-trace.jsonl
+          NAVIGERA_REQUIRE_BROWSER: "1"
+          NAVIGERA_CHROME_LOG: ${{ runner.temp }}/chrome.log
         run: |
           set -o pipefail
           "$CHROME_BIN" --version || true
           if ! cargo test --locked --no-fail-fast 2>&1 | tee /tmp/test.log; then
             sed -n '/^---- /,/^test result/p' /tmp/test.log | grep -v -E '^ +[0-9]+: |^ +at ' | tail -c 30000 > /tmp/test-tail.log || true
             python3 bench/ladder/annotate.py /tmp/test-tail.log "cargo test failure (${{ matrix.browser.label }})"
-            { grep -E -m 20 'FATAL|Check failed|Received signal|DCHECK|NOTREACHED|crash' "$BT_CHROME_LOG"; echo '---'; \
-              grep -v -E 'dbus|Fontconfig|^#[0-9]|^ +[a-z0-9]+: |^$' "$BT_CHROME_LOG" | tail -c 4000; } > /tmp/chrome-tail.log || true
+            { grep -E -m 20 'FATAL|Check failed|Received signal|DCHECK|NOTREACHED|crash' "$NAVIGERA_CHROME_LOG"; echo '---'; \
+              grep -v -E 'dbus|Fontconfig|^#[0-9]|^ +[a-z0-9]+: |^$' "$NAVIGERA_CHROME_LOG" | tail -c 4000; } > /tmp/chrome-tail.log || true
             python3 bench/ladder/annotate.py /tmp/chrome-tail.log "chrome stderr (${{ matrix.browser.label }})"
             exit 1
           fi

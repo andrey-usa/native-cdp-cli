@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contender: `navigera serve` (RustWright + Chrome, no Node).
+"""Contender: `navigera serve` (Chrome, no Node).
 
 Drives one warm `navigera serve` process through the canonical session
 over its JSON-lines stdin/stdout protocol, then reports exact per-process
@@ -56,12 +56,12 @@ def zombie_cpu_s(pid: int) -> tuple[float, float] | None:
 
 
 def read_phases(stderr_path: str) -> dict:
-    """The `BT_TIMINGS {...}` line navigera prints at shutdown, if any."""
+    """The `NAVIGERA_TIMINGS {...}` line navigera prints at shutdown, if any."""
     try:
         with open(stderr_path, encoding="utf-8", errors="replace") as f:
             for line in f:
-                if line.startswith("BT_TIMINGS "):
-                    return json.loads(line[len("BT_TIMINGS "):])
+                if line.startswith("NAVIGERA_TIMINGS "):
+                    return json.loads(line[len("NAVIGERA_TIMINGS "):])
     except (OSError, ValueError):
         pass
     return {}
@@ -98,13 +98,13 @@ class Driver:
             argv += ["--chromium", chrome_bin]
         # stderr -> file: serve logs there; stdout must stay protocol-clean.
         # (ladder.py captures a copy via --debug-log when needed.)
-        self._stderr_file = open(f"/tmp/bt-serve-{os.getpid()}.stderr", "w")
+        self._stderr_file = open(f"/tmp/nv-serve-{os.getpid()}.stderr", "w")
         child_env = dict(os.environ)
         # Always request the in-process peak-RSS report: wait4's ru_maxrss
         # is misreported by the kernel when the child has spawned Chrome.
-        child_env["BT_RSS_REPORT"] = "1"
+        child_env["NAVIGERA_RSS_REPORT"] = "1"
         # Phase timings (launch / first page / close) for the results.
-        child_env["BT_TIMINGS"] = "1"
+        child_env["NAVIGERA_TIMINGS"] = "1"
 
         self.proc = subprocess.Popen(
             argv,
@@ -392,10 +392,10 @@ def main() -> int:
     ap.add_argument("--chromium", default="",
                     help="override browser binary path (for edge/brave)")
     ap.add_argument("--transport", default="",
-                    help="CDP transport: pipe (default) or ws (the bt-ws A/B contender)")
+                    help="CDP transport: pipe (default) or ws (the nv-ws A/B contender)")
     args = ap.parse_args()
     if args.transport:
-        os.environ["BT_CDP_TRANSPORT"] = args.transport
+        os.environ["NAVIGERA_CDP_TRANSPORT"] = args.transport
 
     navigera = args.navigera or os.environ["NAVIGERA"]
     # CHROME_BIN is only a fallback for the chrome engine. Passing it to
@@ -464,7 +464,7 @@ def main() -> int:
     with open(args.stats_out, "w", encoding="utf-8") as f:
         json.dump(stats, f)
     if PROFILE and drv.prof:
-        # stdout is not parsed for bt-serve (harness reads the stats file),
+        # stdout is not parsed for nv-serve (harness reads the stats file),
         # so the table is safe here; ladder.py echoes it into ladder.log.
         print("[profile] per-op wall/cpu for navigera:")
         for op, w, c in drv.prof:
@@ -481,7 +481,7 @@ def main() -> int:
         print(f"[profile] RUSAGE_CHILDREN maxrss: {_ru_children.ru_maxrss} KB")
         if drv._vmm_hwm is not None:
             print(f"[profile] /proc VmHWM just before wait4: {drv._vmm_hwm} KB")
-        # navigera's own VmHWM report (BT_RSS_REPORT=1 in env)
+        # navigera's own VmHWM report (NAVIGERA_RSS_REPORT=1 in env)
         try:
             with open(drv._stderr_file.name) as f:
                 for line in f:

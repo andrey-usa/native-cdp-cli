@@ -49,7 +49,7 @@ const CHROME_ARGS = [
 
 async function launch() {
   const launchOpts = {
-    headless: false, // we pass --headless=new ourselves (see pw-bench.mjs)
+    headless: false, // we pass --headless=new ourselves
     args: CHROME_ARGS,
     ignoreDefaultArgs: ['--enable-automation'],
   };

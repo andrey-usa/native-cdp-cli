@@ -475,8 +475,8 @@ impl Page {
             .await?;
         // fetch/XHR tracking for `network_quiet` (best effort: an engine
         // without the Network domain just never waits for data).
-        // `BT_NO_NETWORK=1` (diagnostic) leaves the Network domain off.
-        if std::env::var_os("BT_NO_NETWORK").is_none() {
+        // `NAVIGERA_NO_NETWORK=1` (diagnostic) leaves the Network domain off.
+        if std::env::var_os("NAVIGERA_NO_NETWORK").is_none() {
             let _ = self
                 .client
                 .send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
@@ -841,7 +841,7 @@ impl Page {
                 .client
                 .send(
                     "DOM.resolveNode",
-                    json!({ "backendNodeId": backend_node_id, "objectGroup": "bt-ref" }),
+                    json!({ "backendNodeId": backend_node_id, "objectGroup": "nv-ref" }),
                     Some(&self.session_id),
                     timeout,
                 )
@@ -879,7 +879,7 @@ impl Page {
                     .client
                     .send(
                         "Runtime.releaseObjectGroup",
-                        json!({ "objectGroup": "bt-ref" }),
+                        json!({ "objectGroup": "nv-ref" }),
                         Some(&self.session_id),
                         timeout,
                     )
@@ -929,7 +929,7 @@ impl Page {
             return self.on_element(target, "click", CLICK_PREP, &[json!(true), settle], wait, timeout);
         }
         let check = point.get("check").and_then(Value::as_bool) == Some(true)
-            && std::env::var_os("BT_NO_CLICK_CHECK").is_none(); // diagnostic knob
+            && std::env::var_os("NAVIGERA_NO_CLICK_CHECK").is_none(); // diagnostic knob
         if check && !self.press_arrived(timeout) {
             eprintln!(
                 "[click] the browser did not deliver the mouse events at ({}, {}); sending them again",
@@ -1213,7 +1213,7 @@ impl Page {
                 let res = self.send(
                     "Runtime.evaluate",
                     json!({ "expression": format!("(async () => {{ const el = await {finder}; return ({IDENTITY})(el); }})()"),
-                            "awaitPromise": true, "objectGroup": "bt-upload" }),
+                            "awaitPromise": true, "objectGroup": "nv-upload" }),
                     timeout,
                 )?;
                 if let Some(details) = res.get("exceptionDetails") {
@@ -1228,7 +1228,7 @@ impl Page {
             }
         }
         let result = self.send("DOM.setFileInputFiles", params, timeout);
-        let _ = self.send("Runtime.releaseObjectGroup", json!({ "objectGroup": "bt-upload" }), timeout);
+        let _ = self.send("Runtime.releaseObjectGroup", json!({ "objectGroup": "nv-upload" }), timeout);
         result.map_err(|e| anyhow::anyhow!("upload: {e:#} (is it an <input type=file>?)"))?;
         Ok(())
     }
@@ -1309,7 +1309,7 @@ impl Page {
         };
         let res = self.send(
             "Runtime.evaluate",
-            json!({ "expression": format!("(async () => await {finder})()"), "awaitPromise": true, "objectGroup": "bt-ax" }),
+            json!({ "expression": format!("(async () => await {finder})()"), "awaitPromise": true, "objectGroup": "nv-ax" }),
             timeout,
         )?;
         if let Some(details) = res.get("exceptionDetails") {
@@ -1322,7 +1322,7 @@ impl Page {
             .ok_or_else(|| anyhow::anyhow!("ax: scope element has no remote object"))?
             .to_string();
         let described = self.send("DOM.describeNode", json!({ "objectId": object }), timeout);
-        let _ = self.send("Runtime.releaseObjectGroup", json!({ "objectGroup": "bt-ax" }), timeout);
+        let _ = self.send("Runtime.releaseObjectGroup", json!({ "objectGroup": "nv-ax" }), timeout);
         described?
             .get("node")
             .and_then(|n| n.get("backendNodeId"))

@@ -148,7 +148,7 @@ page "Cart — Acme Supply" http://127.0.0.1:8765/cart (tab 0 of 2)
   accepted. Each dialog is reported in the response.
 - **No `Runtime.enable`:** it is the best-known automation fingerprint, and
   nothing here needs it.
-- **Logs:** launch details go to stderr only with `BT_VERBOSE=1`.
+- **Logs:** launch details go to stderr only with `NAVIGERA_VERBOSE=1`.
 
 ## Serve protocol (programs)
 
@@ -179,7 +179,7 @@ connection at a time.
 - **Chrome-family (default).** navigera looks for a browser in this
   order:
   1. `--chromium`;
-  2. `$NAVIGERA_CHROMIUM`, `$CDP_CLI_CHROMIUM`, `$CHROME_BIN`;
+  2. `$NAVIGERA_CHROMIUM`, `$CHROME_BIN`;
   3. system Chrome, Chromium or Edge;
   4. Playwright and Puppeteer browser caches. For headless runs the cache
      search prefers chrome-headless-shell.
@@ -189,7 +189,7 @@ connection at a time.
   37498679296).
 - **CDP transport.** `--remote-debugging-pipe` by default on Linux/macOS:
   no TCP port, and the browser exits when navigera dies. `--transport ws`
-  (or `$BT_CDP_TRANSPORT=ws`) opens a DevTools WebSocket port instead, for
+  (or `$NAVIGERA_CDP_TRANSPORT=ws`) opens a DevTools WebSocket port instead, for
   attaching other tools. Windows always uses `ws`; Chrome runs in a
   kill-on-close job object there, so it still exits with navigera.
 - **Windows sessions.** The session file holds `127.0.0.1:<port> <token>`;
@@ -221,32 +221,10 @@ version.
 
 **Diagnostics:**
 
-- `BT_TIMINGS=1` prints launch phases at shutdown.
-- `BT_CDP_TRACE=<file>` records every CDP command sent; CI checks it with
+- `NAVIGERA_TIMINGS=1` prints launch phases at shutdown.
+- `NAVIGERA_CDP_TRACE=<file>` records every CDP command sent; CI checks it with
   `tools/cdp_check.py`.
-- `BT_VERBOSE=1` turns on launch logs.
-
-## Upgrading from 0.2
-
-- `browser-tool` is now `navigera`: the binary, the crate (`cargo install
-  … navigera`), the skill (`.agents/skills/navigera`), release assets
-  (`navigera-<target>.tar.gz` / `.zip`) and session files
-  (`$TMPDIR/navigera-<name>.sock`). `$NAVIGERA_SESSION` and
-  `$NAVIGERA_CHROMIUM` replace the `BROWSER_TOOL_*` names, which still work.
-  Re-run `navigera install-skill` so agents read the new name.
-
-## Upgrading from 0.1
-
-- The CLI `ax` prints the indented text tree. Serve clients that send
-  `{"op":"ax"}` without `format` still get the flat JSON list;
-  `ax --format json` gives it on the CLI.
-- Element commands (`click`, `fill`, …) wait up to 5 s for their element by
-  default instead of the 35 s command timeout. Pass `--timeout-ms` (per op)
-  for slower pages.
-- CDP runs over a pipe by default (see above); `--transport ws` restores the
-  DevTools port.
-- `click` and `press Enter` wait for a navigation they start; check
-  `loading: true` in the result for pages that never finish loading.
+- `NAVIGERA_VERBOSE=1` turns on launch logs.
 
 ## Playwright CLI / agent-browser → navigera
 
