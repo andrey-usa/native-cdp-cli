@@ -13,10 +13,10 @@
 //! whose failure message was drowned out by Chrome's own DBus noise on stderr.
 //!
 //! Chrome's stderr is captured on a piped handle drained by a background
-//! thread, so child-process DBus noise never reaches `browser-tool`'s stderr
+//! thread, so child-process DBus noise never reaches `navigera`'s stderr
 //! (where the protocol lives and where launch errors are reported). That is what
 //! makes a failed launch stop being "silent": the only thing on our stderr is
-//! `browser-tool`'s own message, with a captured stderr tail attached.
+//! `navigera`'s own message, with a captured stderr tail attached.
 //!
 //! If a browser/engine doesn't announce the URL on stderr, we fall back to the
 //! classic port-file + HTTP poll below.
@@ -117,7 +117,7 @@ pub fn launch_chrome(
     .stdout(Stdio::null())
     // Pipe stderr: scanned for the DevTools URL, captured for diagnostics, and
     // kept off our inherited stderr so Chrome child-process noise can't mask the
-    // `browser-tool` error reporting that lives on our stderr.
+    // `navigera` error reporting that lives on our stderr.
     .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("spawn chrome")?;
@@ -501,7 +501,7 @@ fn poll_ws_url(port: u16, timeout: Duration, child: &mut Child) -> Result<String
 /// `lightpanda serve` answer `/json/version` but never close the socket, so
 /// a read-to-EOF client sat in `read` until its 5 s timeout (EAGAIN) on
 /// every poll and never saw the URL.
-fn http_get_body(host: &str, port: u16, path: &str) -> Result<String> {
+pub(crate) fn http_get_body(host: &str, port: u16, path: &str) -> Result<String> {
     let mut stream = TcpStream::connect((host, port))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;

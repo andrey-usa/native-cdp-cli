@@ -1,9 +1,9 @@
 ---
-name: browser-tool
-description: Drive a real headless Chrome from the shell with browser-tool — one command per step against a warm session. Read pages as a compact accessibility tree with [ref=N], then click/fill/select/press by ref, wait, screenshot, handle tabs, iframes and dialogs. Use for web browsing, scraping, form filling and UI checks instead of writing Playwright/Puppeteer/Python scripts.
+name: navigera
+description: Drive a real headless Chrome from the shell with navigera — one command per step against a warm session. Read pages as a compact accessibility tree with [ref=N], then click/fill/select/press by ref, wait, screenshot, handle tabs, iframes and dialogs. Use for web browsing, scraping, form filling and UI checks instead of writing Playwright/Puppeteer/Python scripts.
 ---
 
-# browser-tool
+# navigera
 
 A single native binary that drives Chrome over the DevTools Protocol. Use it
 **directly from the shell, one command per step**. Don't write wrapper scripts.
@@ -11,7 +11,7 @@ A single native binary that drives Chrome over the DevTools Protocol. Use it
 ## Setup (once)
 
 ```bash
-browser-tool --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
+navigera --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
 ```
 
 Windows (PowerShell): `irm https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.ps1 | iex`.
@@ -24,23 +24,38 @@ caches). Otherwise pass `--chromium <path>` to `start`, or set `$CHROME_BIN`.
 ## The loop: start, look, act, look again
 
 ```bash
-browser-tool -s work start                    # once: warm headless browser named "work"
-browser-tool -s work goto https://example.com
-browser-tool -s work --raw ax                 # look: page as a tree with [ref=N]
-browser-tool -s work click 12                 # act on a ref from the last ax
-browser-tool -s work fill 31 "hello world"
-browser-tool -s work press Enter
-browser-tool -s work --raw ax                 # look again to verify
-browser-tool -s work quit                     # done
+navigera -s work start                    # once: warm headless browser named "work"
+navigera -s work goto https://example.com
+navigera -s work --raw ax                 # look: page as a tree with [ref=N]
+navigera -s work click 12                 # act on a ref from the last ax
+navigera -s work fill 31 "hello world"
+navigera -s work press Enter
+navigera -s work --raw ax                 # look again to verify
+navigera -s work quit                     # done
 ```
 
+- Chain steps you are sure of in one shell call and end with a look:
+  `navigera -s work fill 21 "Ada" && navigera -s work click 30 && navigera -s work --raw ax`.
+  A failing step stops the chain. Fewer calls = fewer tokens.
+- `ax` waits (up to 3 s) for data the page is still fetching, so a
+  `goto … && … ax` chain shows the loaded page, not "Loading…".
 - Every command prints one JSON line: `{"ok":true,"result":…}` or
   `{"ok":false,"error":"…"}` (exit code 1). Add `--raw` to print only the
   result. Strings are printed as plain text, which is best for `ax` and `eval`.
 - Actions return `{tab, tabs, url, title}`, so you can see where you ended up.
 - The browser, its tabs and its cookies persist between commands of the same
-  session. `-s <name>` is short for `--session <name>`. `$BROWSER_TOOL_SESSION`
+  session. `-s <name>` is short for `--session <name>`. `$NAVIGERA_SESSION`
   sets a default session. An idle session shuts down after 30 min.
+
+## The user's own browser (their logins and settings)
+
+```bash
+navigera -s me start --attach          # the user's running Chrome 144+ (they enable chrome://inspect/#remote-debugging once, then click Allow)
+navigera -s me start --profile work    # or a separate persistent browser: sign in once, it stays open between sessions
+navigera -s me quit                    # disconnects; the browser stays open (quit --close-browser closes it)
+```
+
+navigera works in a window of its own there and never closes the user's tabs.
 
 ## Reading a page: `ax`
 
@@ -73,7 +88,7 @@ page "Checkout — Acme" http://shop.test/checkout
 - Big page? Scope it with `ax --selector "#results"` or `ax 57` (a ref), and
   use `--limit <lines>` (default 2000).
 - To extract many items, use one `eval` that returns JSON:
-  `browser-tool -s work --raw eval "() => [...document.querySelectorAll('.item')].map(e => e.innerText)"`
+  `navigera -s work --raw eval "() => [...document.querySelectorAll('.item')].map(e => e.innerText)"`
 
 ## Acting
 
@@ -129,11 +144,11 @@ Element commands wait up to 5 s for the element to appear. Pass
 | `ref N not found (stale …)` | take a fresh `ax` |
 | `timed out … waiting for load` | the page has a slow resource: `goto <url> --wait domcontentloaded`, then `wait --text …` |
 | `select: element is … not a <select>` | custom dropdown: `click` it, `ax`, then click the option by ref |
-| `no browser-tool session at …` | run `browser-tool -s <name> start` first |
+| `no navigera session at …` | run `navigera -s <name> start` first |
 | text you expect is missing from `ax` | it may be collapsed (`<details>`, accordion, tab) or appear after scrolling: expand it or `scroll`, then `ax` again |
 
 ## More
 
-`browser-tool help <command>` prints usage for one command. `browser-tool skill`
-prints this guide for the installed version, and `browser-tool install-skill`
+`navigera help <command>` prints usage for one command. `navigera skill`
+prints this guide for the installed version, and `navigera install-skill`
 copies it to `./.agents/skills` (`--claude` for `./.claude/skills`).

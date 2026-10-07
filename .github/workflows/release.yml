@@ -4,6 +4,14 @@ name: release
 # static Linux (musl) x86_64/aarch64, macOS arm64/x86_64 and Windows x64,
 # attached to a GitHub release. install.sh / install.ps1 download the right
 # one.
+#
+# Releasing is one tap: Actions -> release -> Run workflow on master, with
+# the version from Cargo.toml (e.g. 0.3.0). The run checks that the version
+# matches Cargo.toml, builds every target, then creates the tag v<version>
+# on that commit and the release. No local git or token needed (the GitHub
+# app works). Pushing a v* tag still works too; a tag whose version doesn't
+# match Cargo.toml fails before building. Running it for a version whose
+# tag already exists rebuilds that tag and replaces the release's files.
 
 on:
   push:
@@ -13,15 +21,58 @@ on:
     branches: ["release-test/**"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "existing tag to (re)build and publish, e.g. v0.2.0"
+      version:
+        description: "version to release, as in Cargo.toml (e.g. 0.3.0); tags this commit v<version>"
         required: true
+      publish:
+        description: "publish (off = dry run: build and package only)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.p.outputs.tag }}
+      ref: ${{ steps.p.outputs.ref }}
+      publish: ${{ steps.p.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          fail() { echo "::error title=release::$1"; exit 1; }
+          if [ "$EVENT" = workflow_dispatch ]; then
+            tag="v${INPUT_VERSION#v}"; publish="$INPUT_PUBLISH"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              ref="refs/tags/$tag"     # rebuild an existing release
+            else
+              ref="$GITHUB_SHA"
+            fi
+          elif [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            tag="$GITHUB_REF_NAME"; ref="$GITHUB_REF"; publish=true
+          else
+            tag=""; ref="$GITHUB_REF"; publish=false   # release-test/* dry run
+          fi
+          if [ -n "$tag" ]; then
+            have=$(git show "$ref:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+            [ "v$have" = "$tag" ] || fail "$tag does not match Cargo.toml version $have at $ref; bump Cargo.toml first"
+          fi
+          {
+            echo "tag=$tag"; echo "ref=$ref"; echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice title=release plan::${tag:-dry run} from $ref (publish=$publish)"
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.plan.outputs.ref }}
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
@@ -51,36 +102,36 @@ jobs:
           # Windows: link the C runtime statically, so the .exe runs on a
           # machine without the Visual C++ redistributable.
           RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
-        run: cargo build --release --locked --bin browser-tool --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin navigera --target ${{ matrix.target }}
       - name: Smoke test (native targets)
         if: "!contains(matrix.target, 'x86_64-apple') || runner.arch == 'X64'"
         run: |
-          bin=target/${{ matrix.target }}/release/browser-tool
+          bin=target/${{ matrix.target }}/release/navigera
           "$bin" --version
           "$bin" skill | head -3
       - name: Package
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
-          tar -C target/${{ matrix.target }}/release -czf dist/browser-tool-${{ matrix.target }}.tar.gz browser-tool
-          (cd dist && shasum -a 256 browser-tool-${{ matrix.target }}.tar.gz > browser-tool-${{ matrix.target }}.tar.gz.sha256)
+          tar -C target/${{ matrix.target }}/release -czf dist/navigera-${{ matrix.target }}.tar.gz navigera
+          (cd dist && shasum -a 256 navigera-${{ matrix.target }}.tar.gz > navigera-${{ matrix.target }}.tar.gz.sha256)
       - name: Package (zip)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          $zip = "dist/browser-tool-${{ matrix.target }}.zip"
-          Compress-Archive -Path target/${{ matrix.target }}/release/browser-tool.exe -DestinationPath $zip
+          $zip = "dist/navigera-${{ matrix.target }}.zip"
+          Compress-Archive -Path target/${{ matrix.target }}/release/navigera.exe -DestinationPath $zip
           $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-          "$hash  browser-tool-${{ matrix.target }}.zip" | Out-File -Encoding ascii -NoNewline "$zip.sha256"
+          "$hash  navigera-${{ matrix.target }}.zip" | Out-File -Encoding ascii -NoNewline "$zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
           path: dist/
 
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -90,10 +141,14 @@ jobs:
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REF: ${{ needs.plan.outputs.ref }}
         run: |
           ls -la dist
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Creates the tag on the planned commit when it doesn't exist yet.
+            case "$REF" in refs/*) target="$GITHUB_SHA" ;; *) target="$REF" ;; esac
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --target "$target"
+          fi
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
-          echo "::notice title=release::$TAG published with $(ls dist | wc -l) files"
+          echo "::notice title=release::$TAG published with $(ls dist | wc -l) files: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

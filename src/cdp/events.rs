@@ -60,19 +60,34 @@ pub struct NavState {
     pub committed_at: Option<std::time::Instant>,
 }
 
+/// A fetch/XHR open this long is a long poll or a stream.
+const LONG_REQUEST: Duration = Duration::from_secs(5);
+
+/// A tab's in-flight `fetch`/XHR requests (`Network` events), so a read
+/// right after an action can wait for the data it triggered to arrive.
+#[derive(Clone, Debug, Default)]
+pub struct NetState {
+    /// request id -> when it started.
+    pub pending: HashMap<String, std::time::Instant>,
+    /// When the last fetch/XHR started or ended.
+    pub last: Option<std::time::Instant>,
+}
+
 #[derive(Default)]
 pub struct Shared {
     pub policy: Mutex<DialogPolicy>,
     /// Dialogs answered since the last drain: `{type, message, accepted}`.
     pub dialogs: Mutex<Vec<Value>>,
-    /// Page targets opened by a page (they carry an `openerId`), in order.
-    pub opened: Mutex<Vec<String>>,
+    /// Page targets opened by a page (they carry an `openerId`), in order:
+    /// (target, opener).
+    pub opened: Mutex<Vec<(String, String)>>,
     /// Page targets that went away (e.g. `window.close()`).
     pub destroyed: Mutex<Vec<String>>,
     /// session id -> target id, registered when a tab is attached. A page
     /// target's main frame id equals its target id.
     pub sessions: Mutex<HashMap<String, String>>,
     pub nav: Mutex<HashMap<String, NavState>>,
+    pub net: Mutex<HashMap<String, NetState>>,
 }
 
 impl Shared {
@@ -86,6 +101,19 @@ impl Shared {
     pub fn unregister(&self, session_id: &str) {
         self.sessions.lock().unwrap().remove(session_id);
         self.nav.lock().unwrap().remove(session_id);
+        self.net.lock().unwrap().remove(session_id);
+    }
+
+    /// (fetch/XHR requests in flight, when the last one started or ended).
+    /// Requests open longer than [`LONG_REQUEST`] are long polls or streams,
+    /// not data the page is about to render: they don't count.
+    pub fn net_state(&self, session_id: &str) -> (usize, Option<std::time::Instant>) {
+        self.net
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|n| (n.pending.values().filter(|t| t.elapsed() < LONG_REQUEST).count(), n.last))
+            .unwrap_or((0, None))
     }
 
     /// Seed a freshly attached tab's navigation state: its load may have
@@ -136,7 +164,7 @@ impl Shared {
         std::mem::take(&mut *self.dialogs.lock().unwrap())
     }
 
-    pub fn take_opened(&self) -> Vec<String> {
+    pub fn take_opened(&self) -> Vec<(String, String)> {
         std::mem::take(&mut *self.opened.lock().unwrap())
     }
 
@@ -200,13 +228,36 @@ fn on_event(client: &CdpClient, shared: &Shared, event: &Value) {
                     .await;
             });
         }
+        "Network.requestWillBeSent" => {
+            let kind = params.get("type").and_then(Value::as_str).unwrap_or("");
+            if session.is_empty() || !matches!(kind, "XHR" | "Fetch") {
+                return;
+            }
+            if let Some(id) = params.get("requestId").and_then(Value::as_str) {
+                let mut net = shared.net.lock().unwrap();
+                let state = net.entry(session.to_string()).or_default();
+                let now = std::time::Instant::now();
+                state.pending.entry(id.to_string()).or_insert(now);
+                state.last = Some(now);
+            }
+        }
+        "Network.loadingFinished" | "Network.loadingFailed" => {
+            if let Some(id) = params.get("requestId").and_then(Value::as_str) {
+                let mut net = shared.net.lock().unwrap();
+                if let Some(state) = net.get_mut(session) {
+                    if state.pending.remove(id).is_some() {
+                        state.last = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        }
         "Target.targetCreated" => {
             let info = params.get("targetInfo").cloned().unwrap_or(Value::Null);
             let is_page = info.get("type").and_then(Value::as_str) == Some("page");
             let opener = info.get("openerId").and_then(Value::as_str).unwrap_or("");
             if is_page && !opener.is_empty() {
                 if let Some(id) = info.get("targetId").and_then(Value::as_str) {
-                    shared.opened.lock().unwrap().push(id.to_string());
+                    shared.opened.lock().unwrap().push((id.to_string(), opener.to_string()));
                 }
             }
         }
@@ -248,6 +299,10 @@ fn on_event(client: &CdpClient, shared: &Shared, event: &Value) {
                     state.generation += 1;
                 }
                 "Page.frameStartedLoading" => {
+                    // The old document's requests die with it.
+                    if let Some(net) = shared.net.lock().unwrap().get_mut(session) {
+                        net.pending.clear();
+                    }
                     state.loading = true;
                     state.dom_ready = false;
                     state.requested_at = None;

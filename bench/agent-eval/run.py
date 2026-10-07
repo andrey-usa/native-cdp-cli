@@ -16,10 +16,10 @@ the agent's own claim. The run also records model turns, tokens, tool
 calls, how many shell commands used the tool, and off-tool workarounds
 (curl against the site, ad-hoc Playwright/Puppeteer scripts).
 
-  run.py --tools browser-tool,agent-browser,playwright-cli --tasks all \
+  run.py --tools navigera,agent-browser,playwright-cli --tasks all \
          --mode skilled --model gemini-3.5-flash-lite --out out/
 
-`--agent scripted` replays known-good browser-tool command plans instead of
+`--agent scripted` replays known-good navigera command plans instead of
 calling a model: it validates the site, the checks and this harness without
 an API key (CI runs it on every eval, and locally).
 """
@@ -50,8 +50,8 @@ REPO = HERE.parent.parent
 SITE = REPO / "bench" / "site" / "server.py"
 
 TOOLS = {
-    "browser-tool": {
-        "cmd": "browser-tool", "skill": "browser-tool",
+    "navigera": {
+        "cmd": "navigera", "skill": "navigera",
         "repo": "https://github.com/andrey-usa/native-cdp-cli",
     },
     "agent-browser": {
@@ -209,10 +209,10 @@ def prepare(tool: str, mode: str, root: Path, args) -> tuple[Path, dict]:
 
     skills = work / ".agents" / "skills"
     skills.mkdir(parents=True)
-    if tool == "browser-tool":
+    if tool == "navigera":
         if args.bt_bin_dir:
             env["PATH"] = os.pathsep.join([args.bt_bin_dir, env.get("PATH", "")])
-        subprocess.run([exe("browser-tool", env), "install-skill", "--dir", str(skills)], env=env, check=True,
+        subprocess.run([exe("navigera", env), "install-skill", "--dir", str(skills)], env=env, check=True,
                        capture_output=True)
     elif tool == "agent-browser":
         src = Path(npm_root()) / "agent-browser" / "skills" / "agent-browser"
@@ -312,7 +312,7 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
 
 
 def scripted_plan(task: str, base: str) -> list[list[str]]:
-    """Known-good browser-tool plans (refs found by --text / selectors)."""
+    """Known-good navigera plans (refs found by --text / selectors)."""
     s = ["-s", "eval"]
     plans = {
         "lookup": [["start"], ["goto", f"{base}/shop/p/103"], ["wait", "--selector", "#stock"],
@@ -355,9 +355,9 @@ def run_scripted(task: str, base: str, work: Path, env: dict) -> dict:
     started = time.time()
     shells, outputs = [], []
     for argv in scripted_plan(task, base):
-        p = subprocess.run([exe("browser-tool", env), *argv], cwd=work, env=env, capture_output=True, text=True,
+        p = subprocess.run([exe("navigera", env), *argv], cwd=work, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=120)
-        shells.append("browser-tool " + " ".join(argv))
+        shells.append("navigera " + " ".join(argv))
         outputs.append(p.stdout)
         if p.returncode != 0:
             return {"exit": p.returncode, "timed_out": False, "wall_s": round(time.time() - started, 1),
@@ -369,7 +369,7 @@ def run_scripted(task: str, base: str, work: Path, env: dict) -> dict:
             "tools_used": ["run_shell_command"] * len(shells), "requests": 0, "errors": []}
 
 
-TOOL_PATTERNS = ("agent-browser", "playwright-cli", "cli-daemon", "browser-tool")
+TOOL_PATTERNS = ("agent-browser", "playwright-cli", "cli-daemon", "navigera")
 
 # Windows has no pkill -f: match command lines through CIM, skip this
 # harness and its ancestors (their command lines name the tools too).
@@ -380,7 +380,7 @@ foreach ($x in $env:KEEP_PIDS -split ',') { if ($x) { $keep[[int]$x] = 1 } }
 Get-CimInstance Win32_Process | Where-Object {
   -not $keep[[int]$_.ProcessId] -and $_.CommandLine -and (
     $_.CommandLine -like "*$env:RUN_ROOT*" -or
-    $_.Name -in @('browser-tool.exe', 'agent-browser.exe') -or
+    $_.Name -in @('navigera.exe', 'agent-browser.exe') -or
     ($_.Name -eq 'node.exe' -and ($_.CommandLine -match 'playwright-cli|cli-daemon|agent-browser')))
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 """
@@ -458,7 +458,7 @@ def smoke(args) -> int:
     """A minimal model call through the same settings as the eval runs, so a
     bad key, a model id or a helper-model quota shows up before any task."""
     root = Path(tempfile.mkdtemp(prefix="eval-smoke-"))
-    work, env = prepare("browser-tool", "skilled", root, args)
+    work, env = prepare("navigera", "skilled", root, args)
     res = run_gemini("Reply with the single word OK.", work, env, args)
     print(json.dumps({"exit": res["exit"], "models": res["models"], "text": res["text"][:80],
                       "tokens_total": res["tokens_total"]}))
@@ -549,7 +549,7 @@ def merge(paths: list[str], out: Path) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tools", default="browser-tool,agent-browser,playwright-cli")
+    ap.add_argument("--tools", default="navigera,agent-browser,playwright-cli")
     ap.add_argument("--tasks", default="all")
     ap.add_argument("--mode", choices=["skilled", "onboard"], default="skilled")
     ap.add_argument("--agent", choices=["gemini", "scripted"], default="gemini")
@@ -558,7 +558,7 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--run-timeout", type=int, default=900)
     ap.add_argument("--bt-bin-dir", default=str(REPO / "target" / "release"),
-                    help="directory holding the browser-tool binary under test")
+                    help="directory holding the navigera binary under test")
     ap.add_argument("--out", required=True)
     ap.add_argument("--merge", nargs="*", help="combine these summary-<mode>.json files into --out and exit")
     ap.add_argument("--require-pass", action="store_true", help="exit 1 unless every run passed (CI checks)")
@@ -581,7 +581,7 @@ def main() -> int:
         tasks = [t for t in tasks if t["id"] in ("lookup", "docs")][:1] or tasks[:1]
     tools = [t for t in args.tools.split(",") if t]
     if args.agent == "scripted":
-        tools = ["browser-tool"]
+        tools = ["navigera"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     runs = []

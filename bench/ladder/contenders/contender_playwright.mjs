@@ -36,7 +36,7 @@ const base = process.env.LADDER_BASE;
 const chromeBin = process.env.CHROME_BIN || undefined;
 const nEval = Number(process.env.LADDER_N_EVAL || '200');
 
-// Mirror browser-tool's chrome flags: plain headless=new without playwright's
+// Mirror navigera's chrome flags: plain headless=new without playwright's
 // --enable-automation tell.
 const CHROME_ARGS = [
   '--disable-blink-features=AutomationControlled',

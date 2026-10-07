@@ -156,7 +156,7 @@ impl Browser {
                 handle.block_on(CdpClient::connect_pipe(launched.from_browser, launched.to_browser))
             }
             .context("CDP pipe connect")?;
-            let mut browser = Self::finish(handle, client, launched.child, Some(launched.profile_dir), "pipe".into());
+            let mut browser = Self::finish(handle, client, Some(launched.child), Some(launched.profile_dir), "pipe".into());
             browser.stderr = Some(launched.stderr);
             return Ok(browser);
         }
@@ -173,15 +173,27 @@ impl Browser {
             .block_on(CdpClient::connect(&ws_url))
             .context("CDP connect")?;
         crate::timing::record("ws_connect", connect_started);
-        let mut browser = Self::finish(handle, client, child, Some(profile_dir), ws_url);
+        let mut browser = Self::finish(handle, client, Some(child), Some(profile_dir), ws_url);
         browser.job = job;
         Ok(browser)
+    }
+
+    /// Connect to a browser someone else runs (`--attach`, `--profile`).
+    /// navigera owns no process here: `close` only disconnects, and the
+    /// browser, its windows and tabs stay as they are.
+    pub fn connect(handle: &tokio::runtime::Handle, ws_url: &str, bound: Duration) -> Result<Self> {
+        let started = std::time::Instant::now();
+        let client = handle
+            .block_on(CdpClient::connect_within(ws_url, bound))
+            .with_context(|| format!("connect to the running browser at {ws_url}"))?;
+        crate::timing::record("ws_connect", started);
+        Ok(Self::finish(handle, client, None, None, ws_url.to_string()))
     }
 
     fn finish(
         handle: &tokio::runtime::Handle,
         client: CdpClient,
-        child: Child,
+        child: Option<Child>,
         profile_dir: Option<tempfile::TempDir>,
         ws_url: String,
     ) -> Self {
@@ -201,7 +213,7 @@ impl Browser {
         Self {
             handle: handle.clone(),
             client,
-            child: Mutex::new(Some(child)),
+            child: Mutex::new(child),
             kill_group: false,
             _profile_dir: profile_dir,
             ws_url,
@@ -354,12 +366,22 @@ impl Browser {
     }
 
     pub fn new_page(&self, url: Option<&str>) -> Result<Page> {
+        self.new_page_in(url, false)
+    }
+
+    /// [`Browser::new_page`] in a window of its own: in a user's browser
+    /// the agent works beside their tabs, not among them.
+    pub fn new_page_in(&self, url: Option<&str>, new_window: bool) -> Result<Page> {
+        let mut params = json!({ "url": url.unwrap_or("about:blank") });
+        if new_window {
+            params["newWindow"] = json!(true);
+        }
         self.block_on(async {
             let target = self
                 .client
                 .send(
                     "Target.createTarget",
-                    json!({ "url": url.unwrap_or("about:blank") }),
+                    params,
                     None,
                     CMD_TIMEOUT,
                 )
@@ -420,6 +442,13 @@ impl Browser {
         })
     }
 
+    /// `Browser.close`: the browser shuts down gracefully (profile saved).
+    /// The reply may never come: the connection drops as it exits.
+    pub fn close_remote(&self) -> Result<()> {
+        let _ = self.block_on(self.client.send("Browser.close", json!({}), None, Duration::from_secs(5)));
+        Ok(())
+    }
+
     pub fn activate_target(&self, target_id: &str) -> Result<()> {
         self.block_on(async {
             self.client
@@ -472,7 +501,7 @@ impl Browser {
     ///
     /// The profile is a throwaway temp dir, so Chrome's graceful shutdown
     /// (flushing prefs, history, caches) saves nothing we keep — it only
-    /// costs time: browser-tool used to send `Browser.close` and wait up to
+    /// costs time: navigera used to send `Browser.close` and wait up to
     /// 500 ms for the process to exit, which every session and cold start
     /// paid. go-rod (leakless) and chromiumoxide (kill-on-drop) don't wait
     /// for it either. Renderer and helper processes exit on their own once

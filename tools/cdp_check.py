@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate browser-tool's CDP usage against a browser's own protocol schema.
+"""Validate navigera's CDP usage against a browser's own protocol schema.
 
 Two sources of truth are compared with the protocol the browser under test
 serves at /json/protocol (so the check is exact for that Chrome version):

@@ -1,9 +1,9 @@
-//! Opt-in phase timings: set `BT_TIMINGS=1` and browser-tool prints one
+//! Opt-in phase timings: set `BT_TIMINGS=1` and navigera prints one
 //! `BT_TIMINGS {"phase": ms, ...}` line to stderr when it shuts down.
 //!
 //! This is how launch and teardown cost is attributed (spawn → DevTools URL,
 //! WebSocket connect, first page, close) instead of guessed; the benchmark
-//! ladder records these lines for every browser-tool run.
+//! ladder records these lines for every navigera run.
 
 use std::sync::Mutex;
 use std::time::Instant;

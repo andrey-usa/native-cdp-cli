@@ -1,19 +1,19 @@
-//! `browser_tool` — the Node-free realtime browser CLI library.
+//! `navigera` — the Node-free realtime browser CLI library.
 //!
-//! This is the library behind the `browser-tool` binary: a Chrome-first,
+//! This is the library behind the `navigera` binary: a Chrome-first,
 //! line-oriented JSON protocol on a from-scratch CDP engine. The binary is a
 //! thin wrapper — all parsing, protocol and session logic lives here so it
 //! is reusable and testable.
 //!
 //! ```text
 //! # Agents: one warm browser behind a named session, one command per step.
-//! browser-tool --session s start
-//! browser-tool --session s goto https://example.com
-//! browser-tool --session s ax                 # text tree with [ref=N]
-//! browser-tool --session s click 12           # act on a ref
+//! navigera --session s start
+//! navigera --session s goto https://example.com
+//! navigera --session s ax                 # text tree with [ref=N]
+//! navigera --session s click 12           # act on a ref
 //!
 //! # Programs: one JSON command per stdin line.
-//! browser-tool serve
+//! navigera serve
 //! {"id":1,"op":"goto","url":"https://example.com"}
 //! {"id":2,"op":"eval","expression":"() => document.title"}
 //! {"id":3,"op":"quit"}
@@ -35,9 +35,9 @@ pub const DEFAULT_TIMEOUT_MS: f64 = 35_000.0;
 /// Default `ax` line budget (a 500-card listing is ~1500 lines).
 pub const DEFAULT_AX_LIMIT: usize = 2000;
 
-/// The skill shipped inside the binary (`browser-tool skill`,
-/// `browser-tool install-skill`), so docs always match the binary version.
-pub const SKILL_MD: &str = include_str!("../.claude/skills/browser-tool/SKILL.md");
+/// The skill shipped inside the binary (`navigera skill`,
+/// `navigera install-skill`), so docs always match the binary version.
+pub const SKILL_MD: &str = include_str!("../.claude/skills/navigera/SKILL.md");
 
 /// Accepts a ref as a number or as `"12"`, `"@12"`, `"ref=12"`, `"e12"`
 /// (the forms other agent tools print).
@@ -323,9 +323,13 @@ pub enum Command {
         #[serde(default)]
         index: Option<usize>,
     },
-    /// Close the session and exit (serve mode).
+    /// Close the session and exit (serve mode). An attached session
+    /// (`--attach`, `--profile`) only disconnects, unless `close_browser`.
     #[serde(rename = "quit", alias = "close")]
-    Quit {},
+    Quit {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        close_browser: bool,
+    },
 }
 
 /// JSON response for one command.
@@ -369,7 +373,22 @@ pub struct SessionConfig {
     /// A session server with no traffic for this long shuts its browser down
     /// (0 = never). Keeps forgotten agent sessions from leaking Chrome.
     pub idle_timeout_s: u64,
+    /// `--attach <where>`: work in a browser that is already running
+    /// (default `chrome`: the user's own, via chrome://inspect remote
+    /// debugging) instead of launching one. Never closes it.
+    pub attach: Option<String>,
+    /// `--profile <name|dir>`: a persistent, visible navigera browser on
+    /// its own profile, started when needed and kept open between sessions.
+    pub profile: Option<String>,
+    /// `--headless` for a `--profile` browser (visible by default).
+    pub headless: bool,
 }
+
+/// Before `ax`/`screenshot`: no fetch/XHR for this long (Playwright's
+/// `networkidle` uses the same 500 ms) …
+const NETWORK_QUIET: std::time::Duration = std::time::Duration::from_millis(500);
+/// … waiting at most this long (long polls, chatty analytics).
+const NETWORK_QUIET_MAX: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Default idle shutdown for session servers.
 pub const DEFAULT_IDLE_TIMEOUT_S: u64 = 1800;
@@ -386,8 +405,58 @@ impl Default for SessionConfig {
             transport: None,
             session: None,
             idle_timeout_s: DEFAULT_IDLE_TIMEOUT_S,
+            attach: None,
+            profile: None,
+            headless: false,
         }
     }
+}
+
+impl SessionConfig {
+    /// The browser to connect to instead of launching one, if any.
+    pub fn attach_target(&self) -> Option<crate::browser::AttachTarget> {
+        if let Some(spec) = &self.attach {
+            return Some(crate::browser::AttachTarget::Running(spec.clone()));
+        }
+        self.profile.as_ref().map(|name| crate::browser::AttachTarget::Profile {
+            name: name.clone(),
+            executable: self.chromium.clone(),
+            headless: self.headless,
+        })
+    }
+}
+
+/// `--attach` takes an optional value; the default is the user's Chrome.
+const DEFAULT_ATTACH: &str = "chrome";
+
+/// True when `word` is a command name (so it can't be `--attach`'s value).
+fn is_command_word(word: &str) -> bool {
+    matches!(word, "serve" | "skill" | "install-skill" | "help") || OPS.iter().any(|(name, _, _)| *name == word)
+}
+
+/// Pull `--attach [value]` out of argv; a bare `--attach` means `chrome`.
+fn extract_attach(args: &mut std::collections::VecDeque<String>) -> Result<Option<String>, String> {
+    let mut found = None;
+    let mut rest = std::collections::VecDeque::new();
+    while let Some(arg) = args.pop_front() {
+        let value = if arg == "--attach" {
+            match args.front() {
+                Some(next) if !next.starts_with('-') && !is_command_word(next) => args.pop_front(),
+                _ => Some(DEFAULT_ATTACH.to_string()),
+            }
+        } else if let Some(v) = arg.strip_prefix("--attach=") {
+            Some(v.to_string())
+        } else {
+            rest.push_back(arg);
+            continue;
+        };
+        if found.is_some() {
+            return Err("duplicate --attach".into());
+        }
+        found = value;
+    }
+    *args = rest;
+    Ok(found)
 }
 
 /// Commands that never touch a browser.
@@ -395,7 +464,7 @@ impl Default for SessionConfig {
 pub enum Local {
     /// Print the embedded SKILL.md.
     Skill,
-    /// Write SKILL.md to `<dir>/browser-tool/SKILL.md`.
+    /// Write SKILL.md to `<dir>/navigera/SKILL.md`.
     InstallSkill { dir: String },
     Version,
 }
@@ -415,7 +484,7 @@ pub struct ParsedArgs {
 
 /// One op's CLI documentation: (name, synopsis, what it does).
 const OPS: &[(&str, &str, &str)] = &[
-    ("start", "", "spawn a detached session server + headless browser (needs --session)"),
+    ("start", "[--attach [<where>] | --profile <name> [--headless]]", "spawn a detached session server + headless browser (needs --session); --attach/--profile use a browser that stays open"),
     ("goto", "<url> [--wait load|domcontentloaded|commit]", "navigate the active tab (default: wait for load)"),
     ("ax", "[--selector <css> | <ref>] [--limit <lines>] [--refs all] [--format json]", "accessibility snapshot: indented tree, [ref=N] on actionable nodes"),
     ("click", "<ref> | --selector <css> | --text <visible text>", "trusted mouse click; waits for the element and for any navigation it starts"),
@@ -440,7 +509,7 @@ const OPS: &[(&str, &str, &str)] = &[
     ("tab-select", "<index>", "switch the active tab"),
     ("tab-close", "[<index>]", "close a tab (default: active)"),
     ("dialog", "--accept [--prompt-text <t>] | --dismiss", "how alert/confirm/prompt are answered (default: accept; every dialog is reported)"),
-    ("quit", "", "close the browser (and the session server)"),
+    ("quit", "[--close-browser]", "close the browser and the session server; attached (--attach/--profile): only disconnect, unless --close-browser"),
     ("skill", "", "print the agent skill (usage guide) for this version"),
     ("install-skill", "[--dir <skills dir>] [--claude] [--global]", "install the skill for agents (default ./.agents/skills; --claude: ./.claude/skills)"),
 ];
@@ -448,7 +517,7 @@ const OPS: &[(&str, &str, &str)] = &[
 /// Help text for `--help` / argument errors.
 pub fn usage(program: &str) -> String {
     let mut out = format!(
-        "browser-tool {} — drive headless Chrome over CDP, one shell command per step.\n\n\
+        "navigera {} — drive headless Chrome over CDP, one shell command per step.\n\n\
          AGENT LOOP:\n  \
          {program} --session s start\n  \
          {program} --session s goto https://example.com\n  \
@@ -464,12 +533,14 @@ pub fn usage(program: &str) -> String {
     }
     out.push_str(&format!(
         "\nGLOBAL FLAGS (before or after the command):\n  \
-         --session <name>       warm browser behind a local socket ($BROWSER_TOOL_SESSION)\n  \
+         --session <name>       warm browser behind a local socket ($NAVIGERA_SESSION)\n  \
          --raw                  print only the result (strings unquoted); errors on stderr\n  \
          --timeout-ms <ms>      navigation/command timeout (default {DEFAULT_TIMEOUT_MS}); per op: element wait (default 5000)\n  \
          --chromium <path>      browser binary ($CHROME_BIN); --engine lightpanda; --headed\n  \
          --transport ws         CDP over a DevTools port instead of a private pipe (to attach DevTools; Windows default)\n  \
          --idle-timeout-s <s>   session server idle shutdown (default {DEFAULT_IDLE_TIMEOUT_S}, 0 = never)\n  \
+         --attach [chrome|edge|<dir>|<port>]  with `start`: use your running browser (Chrome 144+: chrome://inspect/#remote-debugging); never closes it\n  \
+         --profile <name>       with `start`: persistent visible navigera browser, kept open between sessions (--headless to hide)\n  \
          --pretty               pretty-print JSON\n\n\
          Output: one JSON object per command, {{\"ok\":true,\"result\":…}} or {{\"ok\":false,\"error\":…}}; exit 1 on error.\n\
          Without --session each command launches and closes its own browser (one-shot).\n\
@@ -617,6 +688,21 @@ fn consume_globals(
             .parse::<u64>()
             .map_err(|_| format!("--idle-timeout-s must be whole seconds, got {raw:?}"))?;
     }
+    if let Some(spec) = extract_attach(args)? {
+        config.attach = Some(spec);
+    }
+    if let Some(name) = extract_value(args, "--profile")? {
+        config.profile = Some(name);
+    }
+    if extract_present(args, "--headless") {
+        config.headless = true;
+    }
+    if config.attach.is_some() && config.profile.is_some() {
+        return Err("--attach and --profile are alternatives: pick one".into());
+    }
+    if (config.attach.is_some() || config.profile.is_some()) && crate::browser::is_lightpanda(&config.engine) {
+        return Err("--attach/--profile drive Chrome; drop --engine lightpanda".into());
+    }
     Ok(())
 }
 
@@ -677,7 +763,7 @@ fn positional(args: &mut Args) -> Option<String> {
 /// arguments at all); every other failure is `ArgsError::Invalid`.
 pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs, ArgsError> {
     let mut argv = argv.into_iter();
-    let program = argv.next().unwrap_or_else(|| "browser-tool".to_string());
+    let program = argv.next().unwrap_or_else(|| "navigera".to_string());
     let program = std::path::Path::new(&program)
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
@@ -711,6 +797,19 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
             "--raw" => config.raw = true,
             "--transport" => config.transport = Some(value("--transport")?),
             "--session" | "-s" => config.session = Some(value("--session")?),
+            "--attach" => {
+                config.attach = Some(match &inline {
+                    Some(v) => v.clone(),
+                    None => match args.front() {
+                        Some(next) if !next.starts_with('-') && !is_command_word(next) => {
+                            args.pop_front().expect("front checked")
+                        }
+                        _ => DEFAULT_ATTACH.to_string(),
+                    },
+                })
+            }
+            "--profile" => config.profile = Some(value("--profile")?),
+            "--headless" => config.headless = true,
             "--idle-timeout-s" => {
                 let raw = value("--idle-timeout-s")?;
                 config.idle_timeout_s = raw.parse::<u64>().map_err(|_| {
@@ -908,7 +1007,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
         "url" => Command::Url {},
         // Mostly for sessions (`--session s quit` stops the server); as a
         // one-shot it just launches and closes.
-        "quit" | "close" => Command::Quit {},
+        "quit" | "close" => Command::Quit { close_browser: extract_present(&mut args, "--close-browser") },
         "tab-list" => Command::TabList {},
         "tab-new" => Command::TabNew {
             url: match str_flag(&mut args, "--url")? {
@@ -962,9 +1061,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
     parsed(config, Some(command), false, None)
 }
 
-/// Install the embedded skill into `<dir>/browser-tool/SKILL.md`.
+/// Install the embedded skill into `<dir>/navigera/SKILL.md`.
 pub fn install_skill(dir: &str) -> anyhow::Result<String> {
-    let path = std::path::Path::new(dir).join("browser-tool");
+    let path = std::path::Path::new(dir).join("navigera");
     std::fs::create_dir_all(&path)?;
     let file = path.join("SKILL.md");
     std::fs::write(&file, SKILL_MD)?;
@@ -989,6 +1088,11 @@ pub struct Outcome {
 impl Driver {
     /// Launch the engine described by `config` (Chrome by default).
     pub fn launch(config: &SessionConfig) -> anyhow::Result<Self> {
+        if let Some(target) = config.attach_target() {
+            let session = BrowserSession::attach(&target, config.timeout_ms)
+                .map_err(|e| anyhow::anyhow!("could not connect to the browser: {e:#}"))?;
+            return Ok(Self { session });
+        }
         let session = BrowserSession::launch_with(
             &config.engine,
             !config.headed,
@@ -1058,7 +1162,7 @@ impl Driver {
         // page skip it.
         let reads_page = !matches!(
             command,
-            Command::Quit {} | Command::Dialog { .. } | Command::TabList {} | Command::TabNew { .. }
+            Command::Quit { .. } | Command::Dialog { .. } | Command::TabList {} | Command::TabNew { .. }
                 | Command::TabSelect { .. } | Command::TabClose { .. } | Command::ClosePage { .. }
                 | Command::Goto { .. } | Command::Open { .. } | Command::Reload {} | Command::Back {}
                 | Command::Forward {}
@@ -1069,6 +1173,12 @@ impl Driver {
                 .map(|ms| std::time::Duration::from_secs_f64(ms / 1000.0))
                 .unwrap_or_else(|| self.session.nav_timeout());
             self.session.settle_within(budget);
+            // Snapshots read what the page shows: give data it is still
+            // fetching (an SPA's "Loading…" list) a moment to land, so the
+            // agent doesn't spend a turn on a placeholder.
+            if matches!(command, Command::Ax { .. } | Command::Screenshot { .. }) {
+                self.session.network_quiet(NETWORK_QUIET, budget.min(NETWORK_QUIET_MAX));
+            }
         }
         let result = self.dispatch(command).map_err(|e| {
             let msg = format!("{e:#}");
@@ -1321,7 +1431,14 @@ impl Driver {
                 let path = std::path::absolute(&path).map(|p| p.display().to_string()).unwrap_or(path);
                 Ok(json!({ "path": path, "bytes": bytes.len() }))
             }
-            Command::Quit {} => Ok(json!({ "bye": true })),
+            // Attached: only the connection ends; the browser and every
+            // window (navigera's included) stay open.
+            Command::Quit { close_browser: true } if s.is_attached() => {
+                s.close_browser()?;
+                Ok(json!({ "bye": true, "browser": "closed" }))
+            }
+            Command::Quit { .. } if s.is_attached() => Ok(json!({ "bye": true, "browser": "left open" })),
+            Command::Quit { .. } => Ok(json!({ "bye": true })),
         }
     }
 
@@ -1392,7 +1509,7 @@ pub(crate) fn handle_line(driver: &mut Driver, raw: &str) -> Option<(Response, b
         }
     };
     let started = Instant::now();
-    let is_quit = matches!(command, Command::Quit {});
+    let is_quit = matches!(command, Command::Quit { .. });
     let response = match driver.run_op(&command) {
         Ok(outcome) => outcome_response(id, outcome, started),
         Err(e) => {
@@ -1538,12 +1655,12 @@ pub fn serve(
     let mut driver = match Driver::launch(config) {
         Ok(driver) => driver,
         Err(e) => {
-            eprintln!("browser-tool: {e:#}");
+            eprintln!("navigera: {e:#}");
             return ExitCode::from(1);
         }
     };
     eprintln!(
-        "browser-tool: live session on {} (engine={}); send JSON lines, {{\"op\":\"quit\"}} to exit",
+        "navigera: live session on {} (engine={}); send JSON lines, {{\"op\":\"quit\"}} to exit",
         driver.session().endpoint(),
         config.engine,
     );
@@ -1552,7 +1669,7 @@ pub fn serve(
         let raw = match raw {
             Ok(line) => line,
             Err(e) => {
-                eprintln!("browser-tool: stdin read failed: {e}");
+                eprintln!("navigera: stdin read failed: {e}");
                 return ExitCode::from(1);
             }
         };
@@ -1563,14 +1680,14 @@ pub fn serve(
         // (`--pretty` would split a response across lines and desync any
         // line-reading client; it only applies to one-shot output.)
         if let Err(e) = write_response(output, &response, false) {
-            eprintln!("[browser-tool] failed to write response: {e:#}");
+            eprintln!("[navigera] failed to write response: {e:#}");
             return ExitCode::from(1);
         }
         if is_quit {
             driver.session().close();
             crate::timing::report();
             if std::env::var("BT_RSS_REPORT").is_ok() {
-                eprintln!("[browser-tool] peak RSS at quit: {:?} KB", peak_rss_kb());
+                eprintln!("[navigera] peak RSS at quit: {:?} KB", peak_rss_kb());
             }
             return ExitCode::SUCCESS;
         }
@@ -1578,9 +1695,9 @@ pub fn serve(
     // EOF: shut the session down cleanly.
     driver.session().close();
     crate::timing::report();
-    eprintln!("browser-tool: stdin closed, session shut down");
+    eprintln!("navigera: stdin closed, session shut down");
     if std::env::var("BT_RSS_REPORT").is_ok() {
-        eprintln!("[browser-tool] peak RSS at EOF-shutdown: {:?} KB", peak_rss_kb());
+        eprintln!("[navigera] peak RSS at EOF-shutdown: {:?} KB", peak_rss_kb());
     }
     ExitCode::SUCCESS
 }
@@ -1592,10 +1709,22 @@ pub fn oneshot(
     output: &mut dyn Write,
 ) -> ExitCode {
     let started = Instant::now();
+    if config.attach.is_some() || config.profile.is_some() {
+        // Each one-shot command would open (and abandon) a window in the
+        // user's browser, and Chrome would ask to Allow every one of them.
+        let flag = if config.attach.is_some() { "--attach" } else { "--profile" };
+        let error = format!(
+            "{flag} keeps one connection to a browser that stays open: use a session, \
+             e.g. `navigera -s me start {flag} {}` then `navigera -s me <command>`",
+            config.attach.as_deref().or(config.profile.as_deref()).unwrap_or("")
+        );
+        print_cli_response(output, &json!({ "id": null, "ok": false, "error": error }), config);
+        return ExitCode::from(2);
+    }
     let mut driver = match Driver::launch(config) {
         Ok(driver) => driver,
         Err(e) => {
-            eprintln!("browser-tool: {e:#}");
+            eprintln!("navigera: {e:#}");
             return ExitCode::from(1);
         }
     };
@@ -1617,7 +1746,7 @@ pub fn oneshot(
 pub fn run_local(local: &Local, config: &SessionConfig, output: &mut dyn Write) -> ExitCode {
     match local {
         Local::Version => {
-            let _ = writeln!(output, "browser-tool {}", env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(output, "navigera {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Local::Skill => {
@@ -1647,7 +1776,7 @@ mod tests {
     }
 
     fn cmd(items: &[&str]) -> Command {
-        let mut all = vec!["browser-tool"];
+        let mut all = vec!["navigera"];
         all.extend_from_slice(items);
         parse_args(argv(&all)).expect("valid invocation").command.expect("a command")
     }
@@ -1655,7 +1784,7 @@ mod tests {
     #[test]
     fn parses_one_shot_eval_with_trailing_global_flag() {
         let parsed = parse_args(argv(&[
-            "browser-tool",
+            "navigera",
             "eval",
             "--expression",
             "() => 40 + 2",
@@ -1676,7 +1805,7 @@ mod tests {
     #[test]
     fn parses_globals_before_command() {
         let parsed = parse_args(argv(&[
-            "browser-tool",
+            "navigera",
             "--headed",
             "--engine",
             "chrome",
@@ -1734,7 +1863,8 @@ mod tests {
         assert_eq!(cmd(&["wait", "250"]), Command::Wait { selector: None, text: None, url: None, gone: None, js: None, ms: Some(250.0), timeout_ms: None });
         assert_eq!(cmd(&["tab-select", "1"]), Command::TabSelect { index: 1 });
         assert_eq!(cmd(&["snapshot"]), cmd(&["ax"]));
-        assert_eq!(cmd(&["close"]), Command::Quit {});
+        assert_eq!(cmd(&["close"]), Command::Quit { close_browser: false });
+        assert_eq!(cmd(&["quit", "--close-browser"]), Command::Quit { close_browser: true });
     }
 
     #[test]
@@ -1749,7 +1879,7 @@ mod tests {
 
     #[test]
     fn serve_mode_has_no_command() {
-        let parsed = parse_args(argv(&["browser-tool", "serve", "--timeout-ms", "5000"]))
+        let parsed = parse_args(argv(&["navigera", "serve", "--timeout-ms", "5000"]))
             .expect("valid invocation");
         assert!(parsed.command.is_none());
         assert_eq!(parsed.config.timeout_ms, 5000.0);
@@ -1757,23 +1887,23 @@ mod tests {
 
     #[test]
     fn help_and_invalid_invocations_are_distinguished() {
-        let help = parse_args(argv(&["browser-tool", "--help"])).expect_err("help");
+        let help = parse_args(argv(&["navigera", "--help"])).expect_err("help");
         assert!(
             matches!(help, ArgsError::Help(_)),
             "explicit help is Help, not Invalid: {help:?}"
         );
-        let no_args = parse_args(argv(&["browser-tool"])).expect_err("no args");
+        let no_args = parse_args(argv(&["navigera"])).expect_err("no args");
         assert!(matches!(no_args, ArgsError::Help(_)));
-        match parse_args(argv(&["browser-tool", "help", "click"])).expect_err("op help") {
+        match parse_args(argv(&["navigera", "help", "click"])).expect_err("op help") {
             ArgsError::Help(text) => assert!(text.contains("usage:") && text.contains("click"), "{text}"),
             other => panic!("{other:?}"),
         }
-        match parse_args(argv(&["browser-tool", "fill", "--help"])).expect_err("op help") {
+        match parse_args(argv(&["navigera", "fill", "--help"])).expect_err("op help") {
             ArgsError::Help(text) => assert!(text.contains("fill"), "{text}"),
             other => panic!("{other:?}"),
         }
 
-        let unknown = parse_args(argv(&["browser-tool", "navigat"])).expect_err("unknown");
+        let unknown = parse_args(argv(&["navigera", "navigat"])).expect_err("unknown");
         match unknown {
             ArgsError::Invalid(message) => {
                 assert!(message.contains("unknown command"), "{message}");
@@ -1781,14 +1911,14 @@ mod tests {
             }
             other => panic!("unknown command must be Invalid: {other:?}"),
         }
-        match parse_args(argv(&["browser-tool", "evaluat"])).expect_err("typo") {
+        match parse_args(argv(&["navigera", "evaluat"])).expect_err("typo") {
             ArgsError::Invalid(message) => assert!(message.contains("did you mean `eval`"), "{message}"),
             other => panic!("{other:?}"),
         }
 
-        let missing = parse_args(argv(&["browser-tool", "goto"])).expect_err("missing url");
+        let missing = parse_args(argv(&["navigera", "goto"])).expect_err("missing url");
         assert!(matches!(missing, ArgsError::Invalid(_)));
-        let extra = parse_args(argv(&["browser-tool", "title", "x"])).expect_err("extra");
+        let extra = parse_args(argv(&["navigera", "title", "x"])).expect_err("extra");
         assert!(matches!(extra, ArgsError::Invalid(m) if m.contains("unexpected argument")));
     }
 
@@ -1796,8 +1926,8 @@ mod tests {
     fn tab_commands_parse_indexes() {
         assert_eq!(cmd(&["tab-select", "--index", "2"]), Command::TabSelect { index: 2 });
         assert_eq!(cmd(&["tab-close"]), Command::TabClose { index: None });
-        assert!(parse_args(argv(&["browser-tool", "tab-select"])).is_err());
-        assert!(parse_args(argv(&["browser-tool", "tab-select", "--index", "x"])).is_err());
+        assert!(parse_args(argv(&["navigera", "tab-select"])).is_err());
+        assert!(parse_args(argv(&["navigera", "tab-select", "--index", "x"])).is_err());
     }
 
     #[test]
@@ -1822,7 +1952,7 @@ mod tests {
 
     #[test]
     fn click_targets_are_exclusive() {
-        let both = parse_args(argv(&["browser-tool", "click", "--ref", "1", "--selector", "a"]))
+        let both = parse_args(argv(&["navigera", "click", "--ref", "1", "--selector", "a"]))
             .expect("parses")
             .command
             .unwrap();
@@ -1833,7 +1963,7 @@ mod tests {
         assert!(driver_free.target("click").is_err(), "selector and ref are mutually exclusive");
         driver_free = TargetArgs::default();
         assert!(driver_free.target("click").is_err(), "a target is required");
-        assert!(parse_args(argv(&["browser-tool", "fill", "--value", "x"])).is_ok_and(|p| matches!(
+        assert!(parse_args(argv(&["navigera", "fill", "--value", "x"])).is_ok_and(|p| matches!(
             p.command,
             Some(Command::Fill { ref target, .. }) if *target == TargetArgs::default()
         )));
@@ -1855,7 +1985,8 @@ mod tests {
             },
             Command::Select { target: TargetArgs { text: Some("Country".into()), ..Default::default() }, value: vec!["CA".into()], timeout_ms: None },
             Command::Wait { selector: None, text: Some("Done".into()), url: None, gone: None, js: None, ms: None, timeout_ms: None },
-            Command::Quit {},
+            Command::Quit { close_browser: false },
+            Command::Quit { close_browser: true },
         ] {
             let wire = serde_json::to_string(&command).expect("serializes");
             let back: Command = serde_json::from_str(&wire).expect("deserializes");
@@ -1872,7 +2003,7 @@ mod tests {
     #[test]
     fn session_flags_and_start() {
         let parsed = parse_args(argv(&[
-            "browser-tool", "--session", "work", "--idle-timeout-s", "60", "start",
+            "navigera", "--session", "work", "--idle-timeout-s", "60", "start",
         ]))
         .expect("valid invocation");
         assert!(parsed.start);
@@ -1880,15 +2011,32 @@ mod tests {
         assert_eq!(parsed.config.session.as_deref(), Some("work"));
         assert_eq!(parsed.config.idle_timeout_s, 60);
 
-        let parsed = parse_args(argv(&["browser-tool", "title", "--session", "work", "--raw"]))
+        let parsed = parse_args(argv(&["navigera", "title", "--session", "work", "--raw"]))
             .expect("trailing --session");
         assert_eq!(parsed.config.session.as_deref(), Some("work"));
         assert!(parsed.config.raw);
         assert!(!parsed.start);
-        assert_eq!(parse_args(argv(&["browser-tool", "-s=w", "title"])).unwrap().config.session.as_deref(), Some("w"));
-        assert_eq!(parse_args(argv(&["browser-tool", "title", "-s", "w"])).unwrap().config.session.as_deref(), Some("w"));
-        let parsed = parse_args(argv(&["browser-tool", "--session=work", "install-skill", "--claude"])).expect("local");
+        assert_eq!(parse_args(argv(&["navigera", "-s=w", "title"])).unwrap().config.session.as_deref(), Some("w"));
+        assert_eq!(parse_args(argv(&["navigera", "title", "-s", "w"])).unwrap().config.session.as_deref(), Some("w"));
+        let parsed = parse_args(argv(&["navigera", "--session=work", "install-skill", "--claude"])).expect("local");
         assert_eq!(parsed.local, Some(Local::InstallSkill { dir: ".claude/skills".into() }));
+    }
+
+    #[test]
+    fn attach_and_profile_flags() {
+        let attach = |args: &[&str]| parse_args(argv(args)).map(|p| (p.config.attach, p.start));
+        // Bare --attach means the user's Chrome, wherever it sits.
+        assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach"]).unwrap(), (Some("chrome".into()), true));
+        assert_eq!(attach(&["navigera", "-s", "me", "--attach", "start"]).unwrap(), (Some("chrome".into()), true));
+        assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach", "--headless"]).unwrap().0.as_deref(), Some("chrome"));
+        assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach", "edge"]).unwrap().0.as_deref(), Some("edge"));
+        assert_eq!(attach(&["navigera", "-s", "me", "--attach=9222", "start"]).unwrap().0.as_deref(), Some("9222"));
+        assert_eq!(attach(&["navigera", "--attach", "/tmp/ud", "-s", "me", "start"]).unwrap().0.as_deref(), Some("/tmp/ud"));
+        let p = parse_args(argv(&["navigera", "-s", "me", "start", "--profile", "work", "--headless"])).unwrap();
+        assert_eq!(p.config.profile.as_deref(), Some("work"));
+        assert!(p.config.headless);
+        assert!(parse_args(argv(&["navigera", "-s", "me", "start", "--attach", "--profile", "w"])).is_err());
+        assert!(parse_args(argv(&["navigera", "--engine", "lightpanda", "-s", "me", "start", "--attach"])).is_err());
     }
 
     #[test]

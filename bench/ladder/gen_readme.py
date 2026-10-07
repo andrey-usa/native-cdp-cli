@@ -86,7 +86,7 @@ lines += [
     "read from its zombie's `/proc/<pid>/stat` before reaping (`waitid` with",
     "`WNOWAIT`), and its own VmHWM. The kernel counts CPU in 10 ms ticks, so",
     "values under ~50 ms are a tie. Not `wait4`: its rusage is RUSAGE_BOTH and",
-    "adds in every child the driver reaped. browser-tool, chromedp, puppeteer",
+    "adds in every child the driver reaped. navigera, chromedp, puppeteer",
     "and playwright `wait()` on their Chrome, so `wait4` charged them Chrome's",
     "CPU and RSS; go-rod (its leakless helper reaps Chrome) and chromiumoxide",
     "were never charged. Earlier versions of this table reported exactly that",
@@ -101,13 +101,13 @@ serve_row = next((r for r in chrome if r["name"] == "bt-serve"), None)
 other = next((r for r in chrome if not r["name"].startswith("bt-")), None)
 rank = chrome.index(bt_best) + 1
 lines += [
-    f"**Reading the table.** Session wall order: {order}. browser-tool's best",
+    f"**Reading the table.** Session wall order: {order}. navigera's best",
     f"({bt_best['name']}) ranks #{rank} of {len(chrome)}"
     + (f"; on regular Chrome, bt-serve ({serve_row['session']['wall_s']:.2f}s) is "
        + ("ahead of" if serve_row["session"]["wall_s"] < other["session"]["wall_s"] else "behind")
        + f" the fastest other driver, {other['name']} ({other['session']['wall_s']:.2f}s)"
        if serve_row and other and serve_row is not bt_best else "")
-    + ". All native drivers (browser-tool,",
+    + ". All native drivers (navigera,",
     "go-rod, chromiumoxide, chromedp) spend tens of milliseconds of their own CPU",
     "or less; the Node drivers spend hundreds and carry 80–150 MB of their own RSS.",
     "",
@@ -153,7 +153,7 @@ if ws and serve and ws.get("cold") and serve.get("cold"):
                  else ", within run-to-run noise"))
         + ": the WebSocket handshake itself is ~10 ms. The pipe is the default for two other reasons:",
         "it opens no TCP port that another local process could attach to, and Chrome exits when",
-        "browser-tool dies (EOF on its command pipe), so a killed agent leaks no browser",
+        "navigera dies (EOF on its command pipe), so a killed agent leaks no browser",
         "(`tests/edge_cases.rs`: over a WebSocket port the browser outlives its driver).",
         "",
     ]
@@ -177,7 +177,7 @@ if baseline and serve:
     ph = (serve.get("cold") or {}).get("phases_ms") or {}
     if ph:
         lines += [
-            "Where browser-tool's cold start goes (`BT_TIMINGS`, best run): browser up",
+            "Where navigera's cold start goes (`BT_TIMINGS`, best run): browser up",
             f"{ph.get('browser_up', 0):.0f} ms, first page {ph.get('first_page', 0):.0f} ms, "
             f"close {ph.get('close', 0):.0f} ms.",
             "",
@@ -195,8 +195,8 @@ if agent:
         "|---|---|---|---|---|---|---|",
     ]
     label = {
-        "browser-tool": "`browser-tool` (this repo)",
-        "browser-tool (headless shell)": "`browser-tool` on chrome-headless-shell",
+        "navigera": "`navigera` (this repo)",
+        "navigera (headless shell)": "`navigera` on chrome-headless-shell",
         "agent-browser": "`agent-browser` 0.38 (Vercel Labs, Rust)",
         "playwright-cli": "`playwright-cli` 0.1.22 (Microsoft)",
         "Playwright MCP": "Playwright MCP 0.0.83 (Microsoft)",

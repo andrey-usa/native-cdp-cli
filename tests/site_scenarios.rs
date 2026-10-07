@@ -1,6 +1,6 @@
 //! Realistic end-to-end scenarios against the local Acme Supply site
 //! (`bench/site/server.py`), driven exactly the way an agent drives
-//! browser-tool: one CLI process per step against a named session, reading
+//! navigera: one CLI process per step against a named session, reading
 //! the page through `ax` refs.
 //!
 //! Each step is a pattern that breaks naive browser automation: SPA routing
@@ -18,7 +18,7 @@ use std::process::{Child, Command, Stdio};
 use serde_json::Value;
 
 fn tool_exe() -> String {
-    env!("CARGO_BIN_EXE_browser-tool").to_string()
+    env!("CARGO_BIN_EXE_navigera").to_string()
 }
 
 /// The fixture servers are Python; Windows installs it as `python`.
@@ -27,11 +27,11 @@ fn python() -> &'static str {
 }
 
 /// True when the tool itself would find a browser to launch (same resolver
-/// as `browser-tool`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
+/// as `navigera`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
 /// caches). `BT_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
 /// so a runner without Chrome can't pass the e2e tests by skipping them.
 fn chrome_available() -> bool {
-    let found = browser_tool::browser::resolve_executable_for(None, true).is_some();
+    let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
         found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
         "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
@@ -93,7 +93,7 @@ impl Agent {
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .expect("run browser-tool");
+            .expect("run navigera");
         let text = String::from_utf8_lossy(&out.stdout);
         serde_json::from_str(text.trim()).unwrap_or_else(|_| {
             panic!(

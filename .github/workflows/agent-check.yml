@@ -1,12 +1,12 @@
 name: agent-check
 
 # Natural-language checks: a generic agent (Gemini CLI, free-tier key) is
-# told, in plain words, to buy something with browser-tool and its skill.
+# told, in plain words, to buy something with navigera and its skill.
 #
 #   purchase       local Acme Supply shop: cart, coupon, checkout through a
 #                  card iframe; judged from the order the site recorded.
 #                  Runs on Linux and on Windows (the agent's shell is then
-#                  PowerShell; browser-tool runs its Windows paths: WebSocket
+#                  PowerShell; navigera runs its Windows paths: WebSocket
 #                  CDP, loopback-TCP sessions, kill-on-close job object).
 #   purchase-live  Sauce Labs' public demo shop (saucedemo.com, built for
 #                  automation practice; no real payment): log in, cart,
@@ -67,7 +67,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets[matrix.key] || secrets.GEMINI_API_KEY }}
         run: |
           echo "::notice title=agent check key::${{ matrix.task }} (${{ matrix.os }}) used $KEY_SLOT"
-          python bench/agent-eval/run.py --mode skilled --tools browser-tool --tasks "${{ matrix.task }}" \
+          python bench/agent-eval/run.py --mode skilled --tools navigera --tasks "${{ matrix.task }}" \
             --model "$MODEL" --gemini "$GEMINI_BIN" --out out --require-pass
       - name: Result
         if: always() && env.HAS_KEY == 'true'

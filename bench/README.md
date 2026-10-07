@@ -1,9 +1,9 @@
 # Headless-browser benchmark: RustWright vs Playwright, Chrome vs Lightpanda
 
-> Historical record. Realtime browser driving moved to `browser-tool`
-> (`src/bin/browser-tool.rs`): same RustWright+Chromium engine, zero Node.js.
-> `browser-tool eval --expression …` replaces a Playwright `page.evaluate`,
-> `browser-tool serve` (JSON lines on stdin/stdout) replaces a Playwright
+> Historical record. Realtime browser driving moved to `navigera`
+> (`src/bin/navigera.rs`): same RustWright+Chromium engine, zero Node.js.
+> `navigera eval --expression …` replaces a Playwright `page.evaluate`,
+> `navigera serve` (JSON lines on stdin/stdout) replaces a Playwright
 > session — one warm browser, many commands, no relaunch cost.
 
 Measured for this repo's CDP sources (eBay SRP, Car-Part.com search, Hollander

@@ -1,18 +1,18 @@
-//! `browser-tool` — thin CLI wrapper over the [`browser_tool`] library.
+//! `navigera` — thin CLI wrapper over the [`navigera`] library.
 //!
-//! All parsing, protocol and session logic lives in `browser_tool::
-//! browser_tool` so it can be reused (and unit-tested) without spawning a
+//! All parsing, protocol and session logic lives in `navigera::
+//! navigera` so it can be reused (and unit-tested) without spawning a
 //! process; this binary only wires argv/stdin/stdout to that library.
 //!
 //! ```text
-//! browser-tool eval --expression "() => document.title" --pretty   # one-shot
-//! browser-tool serve                                               # warm session
+//! navigera eval --expression "() => document.title" --pretty   # one-shot
+//! navigera serve                                               # warm session
 //! ```
 
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 
-use browser_tool::protocol::{self, ArgsError};
+use navigera::protocol::{self, ArgsError};
 
 fn main() -> ExitCode {
     // RustWright telemetry opt-out (must be set before any launch).
@@ -21,14 +21,14 @@ fn main() -> ExitCode {
 
     // Panics now go to stderr, which stays clean: Chrome's own stderr is piped
     // (and drained) inside the launch, so its DBus noise can't mask our output.
-    let parsed = match browser_tool::protocol::parse_args(std::env::args()) {
+    let parsed = match navigera::protocol::parse_args(std::env::args()) {
         Ok(parsed) => parsed,
         Err(ArgsError::Help(text)) => {
             println!("{text}");
             return ExitCode::SUCCESS;
         }
         Err(ArgsError::Invalid(message)) => {
-            eprintln!("browser-tool: {message}");
+            eprintln!("navigera: {message}");
             return ExitCode::from(2);
         }
     };
@@ -48,14 +48,14 @@ fn run(parsed: &protocol::ParsedArgs, output: &mut dyn Write) -> ExitCode {
         return protocol::run_local(local, config, output);
     }
     {
-        use browser_tool::session;
-        // An explicit `--session` always wins; $BROWSER_TOOL_SESSION only
+        use navigera::session;
+        // An explicit `--session` always wins; $NAVIGERA_SESSION only
         // routes client calls and `start` (a bare `serve` stays on stdin).
         if parsed.start {
             return match config.session.clone().or_else(session::env_session) {
                 Some(name) => session::start(config, &name, output),
                 None => {
-                    eprintln!("browser-tool: `start` needs --session <name>");
+                    eprintln!("navigera: `start` needs --session <name>");
                     ExitCode::from(2)
                 }
             };

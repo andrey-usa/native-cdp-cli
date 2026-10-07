@@ -1,30 +1,30 @@
-# `browser-tool` reference
+# `navigera` reference
 
-browser-tool drives a real Chrome over the DevTools Protocol from one native
+navigera drives a real Chrome over the DevTools Protocol from one native
 binary. There are three ways to run it:
 
 | mode | how | for |
 |---|---|---|
-| **session** | `browser-tool -s <name> start`, then one command per process, then `quit` | agents' shell tools, people at a terminal |
-| **serve** | `browser-tool serve`; JSON commands on stdin, one JSON response per line | programs holding a pipe open |
-| **one-shot** | `browser-tool <command> …` | a single action (launches and closes a browser) |
+| **session** | `navigera -s <name> start`, then one command per process, then `quit` | agents' shell tools, people at a terminal |
+| **serve** | `navigera serve`; JSON commands on stdin, one JSON response per line | programs holding a pipe open |
+| **one-shot** | `navigera <command> …` | a single action (launches and closes a browser) |
 
-The agent-oriented guide is [the skill](../.claude/skills/browser-tool/SKILL.md),
-also printed by `browser-tool skill`. This page is the full reference.
+The agent-oriented guide is [the skill](../.claude/skills/navigera/SKILL.md),
+also printed by `navigera skill`. This page is the full reference.
 
 ## CLI shape
 
 ```text
-browser-tool [GLOBAL FLAGS] <command> [ARGS] [GLOBAL FLAGS]
+navigera [GLOBAL FLAGS] <command> [ARGS] [GLOBAL FLAGS]
 ```
 
 | global flag | meaning |
 |---|---|
-| `-s, --session <name\|path>` | named session (`$TMPDIR/browser-tool-<name>.sock`, `%TEMP%` on Windows; a value with a path separator is used as the path). `$BROWSER_TOOL_SESSION` sets a default for client calls |
+| `-s, --session <name\|path>` | named session (`$TMPDIR/navigera-<name>.sock`, `%TEMP%` on Windows; a value with a path separator is used as the path). `$NAVIGERA_SESSION` sets a default for client calls |
 | `--raw` | print only the result (strings unquoted, e.g. the `ax` tree). Errors go to stderr as `error: …`, notes (dialogs, new tabs) as `note: …` |
 | `--pretty` | pretty-print the JSON |
 | `--timeout-ms <ms>` | before the command: navigation/command timeout (default 35000). After an element command: that op's element wait (default 5000) |
-| `--chromium <path>` | browser binary (also `$BROWSER_TOOL_CHROMIUM`, `$CHROME_BIN`) |
+| `--chromium <path>` | browser binary (also `$NAVIGERA_CHROMIUM`, `$CHROME_BIN`) |
 | `--engine chrome\|lightpanda`, `--headed` | engine; visible window |
 | `--idle-timeout-s <s>` | a session server shuts down after this idle time (default 1800, 0 = never) |
 | `-V, --version`, `-h, --help`, `help <command>` | info |
@@ -74,7 +74,7 @@ Selector and text targets auto-wait (default 5 s) for the element to appear.
 | `dialog` | `--accept [--prompt-text t]` or `--dismiss` | `{dialogs: "accept"\|"dismiss"}` |
 | `quit` (`close`) | — | `{bye: true}`; a session server and its browser exit |
 | `skill` | — | prints the agent guide (SKILL.md) |
-| `install-skill` | `[--dir <skills dir>] [--claude] [--global]` | writes `<dir>/browser-tool/SKILL.md` (default `./.agents/skills`) |
+| `install-skill` | `[--dir <skills dir>] [--claude] [--global]` | writes `<dir>/navigera/SKILL.md` (default `./.agents/skills`) |
 
 ### The `ax` tree
 
@@ -110,6 +110,13 @@ page "Cart — Acme Supply" http://127.0.0.1:8765/cart (tab 0 of 2)
 
 ## Behaviour
 
+- **Snapshots wait for fetched data.** Before `ax` and `screenshot`,
+  navigera waits until the tab has had no `fetch`/XHR in flight for 500 ms
+  (Playwright's `networkidle` window), at most 3 s; requests open longer
+  than 5 s (long polls, streams) don't count. A page that has been quiet —
+  usual when an agent has been thinking — is read at once. So
+  `goto … && … ax` shows a single-page app's list, not its "Loading…"
+  placeholder.
 - **Clicks** are trusted mouse events at the element's centre after
   scrolling it into view. Same-origin iframe offsets are added in the page;
   inside a cross-origin iframe (refs only) the box comes from
@@ -166,10 +173,10 @@ connection at a time.
 
 ## Browsers and engines
 
-- **Chrome-family (default).** browser-tool looks for a browser in this
+- **Chrome-family (default).** navigera looks for a browser in this
   order:
   1. `--chromium`;
-  2. `$BROWSER_TOOL_CHROMIUM`, `$CDP_CLI_CHROMIUM`, `$CHROME_BIN`;
+  2. `$NAVIGERA_CHROMIUM`, `$CDP_CLI_CHROMIUM`, `$CHROME_BIN`;
   3. system Chrome, Chromium or Edge;
   4. Playwright and Puppeteer browser caches. For headless runs the cache
      search prefers chrome-headless-shell.
@@ -178,10 +185,10 @@ connection at a time.
   3× faster than full Chrome (cold start 0.32 s → 0.11 s in bench run
   37498679296).
 - **CDP transport.** `--remote-debugging-pipe` by default on Linux/macOS:
-  no TCP port, and the browser exits when browser-tool dies. `--transport ws`
+  no TCP port, and the browser exits when navigera dies. `--transport ws`
   (or `$BT_CDP_TRANSPORT=ws`) opens a DevTools WebSocket port instead, for
   attaching other tools. Windows always uses `ws`; Chrome runs in a
-  kill-on-close job object there, so it still exits with browser-tool.
+  kill-on-close job object there, so it still exits with navigera.
 - **Windows sessions.** The session file holds `127.0.0.1:<port> <token>`;
   the server listens on that loopback port and drops any client whose first
   line isn't the token (a web page posting to localhost can't drive it).
@@ -191,12 +198,39 @@ connection at a time.
   binary comes from `$LIGHTPANDA_BIN` or `PATH`, or from `--chromium`. It
   supports a single tab and fires no load events, so `goto` waits for commit.
 
+**Your own browser: `--attach` and `--profile`** (with `start`, or `serve`):
+
+| | what it connects to | closes the browser? |
+|---|---|---|
+| `--attach` / `--attach chrome` | your running Chrome (also `beta`, `dev`, `canary`, `chromium`, `edge`): Chrome 144+ serves remote debugging for your default profile once you turn it on at `chrome://inspect/#remote-debugging`, and asks you to Allow each connection. navigera reads the endpoint from `DevToolsActivePort` in that browser's user data directory | never |
+| `--attach <dir>` | a Chrome started with `--remote-debugging-port` and `--user-data-dir=<dir>` | never |
+| `--attach ws://…` / `http://host:port` / `<port>` | that DevTools endpoint | never |
+| `--profile <name>` | a visible Chrome on its own persistent profile (`%LOCALAPPDATA%\navigera\profiles\<name>`, `~/Library/Application Support/navigera/profiles/<name>`, `~/.local/share/navigera/profiles/<name>`; a path works too), started when it isn't running and reused when it is. Sign in once; cookies, settings and extensions stay. `--headless` hides it | only with `quit --close-browser` |
+
+The agent gets a window of its own; your tabs are never touched, and only
+popups from navigera's own tabs are adopted. `quit` disconnects and leaves
+every window open. Because Chrome asks to Allow every new connection, these
+modes need a session (one connection for all commands): a one-shot command
+with `--attach` is refused. Chrome 136–143 can't serve its default profile
+at all (the `--remote-debugging-port` switch is ignored for it, and the
+inspect toggle arrives in 144): use `--profile` there, which works on any
+version.
+
 **Diagnostics:**
 
 - `BT_TIMINGS=1` prints launch phases at shutdown.
 - `BT_CDP_TRACE=<file>` records every CDP command sent; CI checks it with
   `tools/cdp_check.py`.
 - `BT_VERBOSE=1` turns on launch logs.
+
+## Upgrading from 0.2
+
+- `browser-tool` is now `navigera`: the binary, the crate (`cargo install
+  … navigera`), the skill (`.agents/skills/navigera`), release assets
+  (`navigera-<target>.tar.gz` / `.zip`) and session files
+  (`$TMPDIR/navigera-<name>.sock`). `$NAVIGERA_SESSION` and
+  `$NAVIGERA_CHROMIUM` replace the `BROWSER_TOOL_*` names, which still work.
+  Re-run `navigera install-skill` so agents read the new name.
 
 ## Upgrading from 0.1
 
@@ -211,9 +245,9 @@ connection at a time.
 - `click` and `press Enter` wait for a navigation they start; check
   `loading: true` in the result for pages that never finish loading.
 
-## Playwright CLI / agent-browser → browser-tool
+## Playwright CLI / agent-browser → navigera
 
-| playwright-cli | agent-browser | browser-tool |
+| playwright-cli | agent-browser | navigera |
 |---|---|---|
 | `open <url>` / `goto <url>` | `open <url>` | `start` + `goto <url>` |
 | `snapshot` | `snapshot` | `ax` (or `snapshot`) |

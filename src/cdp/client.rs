@@ -62,8 +62,14 @@ impl CdpClient {
     pub async fn connect(ws_url: &str) -> Result<Self> {
         // Bound the connect so a stale/unreachable DevTools URL fails in 15s
         // instead of hanging the CLI forever.
+        Self::connect_within(ws_url, Duration::from_secs(15)).await
+    }
+
+    /// [`CdpClient::connect`] with its own bound: attaching to a user's
+    /// Chrome waits while Chrome asks them to allow the connection.
+    pub async fn connect_within(ws_url: &str, bound: Duration) -> Result<Self> {
         let (ws, _) = tokio::time::timeout(
-            Duration::from_secs(15),
+            bound,
             tokio_tungstenite::connect_async(ws_url),
         )
         .await
@@ -291,7 +297,7 @@ fn trace(method: &str, params: &Value) {
             .map(Mutex::new)
     });
     let Some(file) = file else { return };
-    // One write() per line: several browser-tool processes append to the
+    // One write() per line: several navigera processes append to the
     // same file in parallel, and O_APPEND keeps single writes whole.
     let mut line = serde_json::json!({ "method": method, "params": shape(params, 0) }).to_string();
     line.push('\n');

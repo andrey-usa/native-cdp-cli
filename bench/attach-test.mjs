@@ -2,7 +2,7 @@
 // Diagnostic: does Playwright itself get blocked, or is it the launch flags?
 //
 // HISTORICAL — kept for the engine A/B record in bench/out/.
-// Realtime driving is now `browser-tool` (src/bin/browser-tool.rs), zero Node.
+// Realtime driving is now `navigera` (src/bin/navigera.rs), zero Node.
 //
 // Starts Chrome with the same command line RustWright builds (fresh profile,
 // `--headless=new`, no `--enable-automation`), then attaches playwright-core

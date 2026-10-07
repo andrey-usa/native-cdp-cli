@@ -1,4 +1,4 @@
-//! browser-tool: from-scratch CDP CLI for AI-agentic browser exploration.
+//! navigera: from-scratch CDP CLI for AI-agentic browser exploration.
 //!
 //! Native Rust Chrome DevTools Protocol engine (no WebDriver, no external
 //! driver crates): direct CDP JSON-RPC over WebSocket, two-worker Tokio
@@ -7,5 +7,6 @@
 pub mod browser;
 pub mod protocol;
 pub mod timing;
+pub mod proc;
 pub mod session;
 pub mod cdp;

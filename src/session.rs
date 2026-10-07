@@ -8,11 +8,11 @@
 //! scripts around `serve`. A session server owns the browser instead:
 //!
 //! ```text
-//! browser-tool --session s start              # detached server, returns at once
-//! browser-tool --session s goto --url https://example.com
-//! browser-tool --session s ax                 # compact a11y view with refs
-//! browser-tool --session s click --ref 12
-//! browser-tool --session s quit               # browser + server shut down
+//! navigera --session s start              # detached server, returns at once
+//! navigera --session s goto --url https://example.com
+//! navigera --session s ax                 # compact a11y view with refs
+//! navigera --session s click --ref 12
+//! navigera --session s quit               # browser + server shut down
 //! ```
 //!
 //! The wire format is the `serve` protocol verbatim (one JSON command per
@@ -148,21 +148,23 @@ mod endpoint {
 }
 
 /// Socket path for a session: a value containing a path separator is used
-/// as-is, a bare name maps to `$TMPDIR/browser-tool-<name>.sock` (on
+/// as-is, a bare name maps to `$TMPDIR/navigera-<name>.sock` (on
 /// Windows `%TEMP%`; there the file holds the loopback address + token).
 pub fn socket_path(name: &str) -> PathBuf {
     if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
         PathBuf::from(name)
     } else {
-        std::env::temp_dir().join(format!("browser-tool-{name}.sock"))
+        std::env::temp_dir().join(format!("navigera-{name}.sock"))
     }
 }
 
-/// `$BROWSER_TOOL_SESSION`, if set: the default session for client calls.
+/// `$NAVIGERA_SESSION` (or the pre-0.3 `$BROWSER_TOOL_SESSION`), if set:
+/// the default session for client calls.
 pub fn env_session() -> Option<String> {
-    std::env::var("BROWSER_TOOL_SESSION")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
+    ["NAVIGERA_SESSION", "BROWSER_TOOL_SESSION"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|s| !s.trim().is_empty())
 }
 
 fn now_s() -> u64 {
@@ -182,7 +184,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     let path = socket_path(name);
     if connect(&path).is_ok() {
         eprintln!(
-            "browser-tool: a session is already listening on {}",
+            "navigera: a session is already listening on {}",
             path.display()
         );
         return ExitCode::from(1);
@@ -193,20 +195,20 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     let mut driver = match Driver::launch(config) {
         Ok(driver) => driver,
         Err(e) => {
-            eprintln!("browser-tool: {e:#}");
+            eprintln!("navigera: {e:#}");
             return ExitCode::from(1);
         }
     };
     let listener = match Listener::bind(&path) {
         Ok(listener) => listener,
         Err(e) => {
-            eprintln!("browser-tool: bind {}: {e}", path.display());
+            eprintln!("navigera: bind {}: {e}", path.display());
             driver.session().close();
             return ExitCode::from(1);
         }
     };
     eprintln!(
-        "browser-tool: session listening on {} ({})",
+        "navigera: session listening on {} ({})",
         path.display(),
         driver.session().endpoint()
     );
@@ -226,7 +228,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     driver.session().close();
     crate::timing::report();
     let _ = std::fs::remove_file(&path);
-    eprintln!("browser-tool: session {} shut down", path.display());
+    eprintln!("navigera: session {} shut down", path.display());
     ExitCode::SUCCESS
 }
 
@@ -263,7 +265,7 @@ fn spawn_idle_watchdog(path: PathBuf, last: Arc<AtomicU64>, idle_s: u64) {
         if now_s().saturating_sub(last.load(Ordering::Relaxed)) < idle_s {
             continue;
         }
-        eprintln!("browser-tool: idle for {idle_s}s, shutting the session down");
+        eprintln!("navigera: idle for {idle_s}s, shutting the session down");
         if let Ok(mut stream) = connect(&path) {
             let _ = stream.write_all(b"{\"op\":\"quit\"}\n");
             let _ = stream.flush();
@@ -286,7 +288,7 @@ pub fn client(
         Ok(stream) => stream,
         Err(e) => {
             let error = format!(
-                "no browser-tool session at {} ({e}); start one with `browser-tool --session {name} start`",
+                "no navigera session at {} ({e}); start one with `navigera --session {name} start`",
                 path.display()
             );
             print_json(
@@ -337,7 +339,7 @@ pub fn client(
             "error": "session ended without a response (see its log next to the socket)",
         }),
     };
-    if matches!(command, Command::Quit {}) {
+    if matches!(command, Command::Quit { .. }) {
         // Return only once the server has let go of the socket, so a `start`
         // right after `quit` gets a fresh session, not the dying one.
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -416,7 +418,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
     }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
-        Err(e) => return fail(output, config, format!("locate browser-tool binary: {e}")),
+        Err(e) => return fail(output, config, format!("locate navigera binary: {e}")),
     };
     let log = match std::fs::File::create(&log_path) {
         Ok(file) => file,
@@ -441,16 +443,30 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
     if let Some(transport) = &config.transport {
         cmd.arg("--transport").arg(transport);
     }
+    if let Some(spec) = &config.attach {
+        cmd.arg(format!("--attach={spec}"));
+    }
+    if let Some(name) = &config.profile {
+        cmd.arg("--profile").arg(name);
+    }
+    if config.headless {
+        cmd.arg("--headless");
+    }
     cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
-    let mut child = match spawn_detached(&mut cmd) {
+    let mut child = match crate::proc::spawn_detached(&mut cmd) {
         Ok(child) => child,
         Err(e) => return fail(output, config, format!("spawn session server: {e}")),
     };
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Attaching to the user's Chrome waits for them to click Allow.
+    let wait = if config.attach.is_some() { 180 } else { 60 };
+    if config.attach.is_some() {
+        eprintln!("navigera: connecting to your browser; if Chrome asks, click Allow");
+    }
+    let deadline = Instant::now() + Duration::from_secs(wait);
     loop {
         if connect(&path).is_ok() {
             print_json(
@@ -485,49 +501,9 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
             return fail(
                 output,
                 config,
-                format!("session server did not listen within 60s; see {}", log_path.display()),
+                format!("session server did not listen within {wait}s; see {}", log_path.display()),
             );
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// Spawn the session server so it outlives this command and the agent's
-/// shell that ran it: its own process group on Unix; on Windows detached
-/// from our console, in a new process group, out of the caller's job when
-/// that job allows it (Node's child-process job does), and without a copy
-/// of our stdio handles — an inherited stdout would keep the caller's pipe
-/// open, and a shell waiting for EOF would hang until the session quits.
-#[cfg(unix)]
-fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0).spawn()
-}
-
-#[cfg(windows)]
-fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
-    const HANDLE_FLAG_INHERIT: u32 = 1;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
-        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
-    }
-    for which in STD_HANDLES {
-        // SAFETY: plain Win32 calls on this process's own std handles.
-        unsafe {
-            let handle = GetStdHandle(which);
-            if !handle.is_null() && handle as isize != -1 {
-                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
-            }
-        }
-    }
-    let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    cmd.creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
-        .spawn()
-        .or_else(|_| cmd.creation_flags(flags).spawn())
 }

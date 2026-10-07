@@ -38,6 +38,9 @@ input{position:absolute;left:4px;top:4px;margin:0;width:20px;height:20px}
     # A hidden copy ahead of the visible element.
     "/twice": """<!doctype html><title>two</title><div class=t style="display:none">hidden</div><div class=t>shown</div>""",
     "/keys": """<!doctype html><title>keys</title><input id=i autofocus><p id=p>no form here</p>""",
+    # A single-page app: the list arrives by fetch, then renders a beat later.
+    "/spa": """<!doctype html><title>spa</title><p id=s role=status>Loading items…</p><script>
+fetch('/slow?ms=300').then(r => r.text()).then(() => setTimeout(() => { s.textContent = 'Loaded 3 items' }, 200))</script>""",
     "/prompt": """<!doctype html><title>prompt</title><button onclick="o.textContent='got:'+prompt('Name?','Ada')">ask</button><div id=o></div>""",
 }
 

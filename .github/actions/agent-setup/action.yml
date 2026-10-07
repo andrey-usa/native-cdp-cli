@@ -1,6 +1,6 @@
 name: agent-setup
 description: >
-  What every agent-eval / agent-check job needs: browser-tool built from
+  What every agent-eval / agent-check job needs: navigera built from
   this commit, Chrome on $CHROME_BIN and Gemini CLI on $GEMINI_BIN (Linux
   or Windows runners). The other tools are installed by the job itself,
   after onboarding runs (an onboarding agent must find its tool not
@@ -18,10 +18,10 @@ runs:
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
-    - name: Build browser-tool (release)
+    - name: Build navigera (release)
       shell: bash
       run: |
-        cargo build --release --locked --bin browser-tool
+        cargo build --release --locked --bin navigera
         # setup-rust-toolchain pins the toolchain for this checkout only
         # (rustup override); agent workspaces get the default a developer
         # machine has.

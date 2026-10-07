@@ -51,7 +51,7 @@ If something you need isn't there, add an annotation for it (see
 ## 3. Fast loop
 
 1. **Local first.** `cargo test` runs the browser e2e tests against a local
-   Chrome. browser-tool finds `$CHROME_BIN`, a system Chrome, or the
+   Chrome. navigera finds `$CHROME_BIN`, a system Chrome, or the
    Playwright/Puppeteer caches (`/opt/pw-browsers`, `~/.cache/ms-playwright`).
    The tests cover the serve protocol, sessions, and the full Acme Supply
    scenario in `tests/site_scenarios.rs` (about 10 s).
@@ -66,7 +66,7 @@ If something you need isn't there, add an annotation for it (see
    ```
    The ref is refreshed by `vendor.yml` whenever `Cargo.lock` changes.
    Manual poking: run `python3 bench/site/server.py --port 8765`, then drive
-   it with `browser-tool -s dev …`.
+   it with `navigera -s dev …`.
 2. **No local browser/registry?** Push a *branch* and dispatch narrow runs:
    ```sh
    gh workflow run ci.yml    --ref my-branch                      # ~3 min
@@ -77,18 +77,18 @@ If something you need isn't there, add an annotation for it (see
    bt-lightpanda playwright puppeteer chromiumoxide chromey chromedp gorod`);
    `scenarios` is any of `eval,cold,realworld,browse,agent` (empty = the
    session gate only; `agent` = one step per CLI process / MCP call:
-   browser-tool, agent-browser, playwright-cli, Playwright MCP, Chrome
+   navigera, agent-browser, playwright-cli, Playwright MCP, Chrome
    DevTools MCP).
 3. **Judge a perf change with an A/B in ONE run.** GitHub runners differ
    between runs by more than most changes are worth, so never compare
-   numbers across runs. `baseline_ref` builds a second browser-tool from any
+   numbers across runs. `baseline_ref` builds a second navigera from any
    ref and runs it as `bt-baseline` beside your build on the same machine:
    ```sh
    gh workflow run bench.yml --ref my-branch -f reps=3 \
        -f only=bt-serve,bt-baseline,gorod -f scenarios=eval,cold \
        -f baseline_ref=master        # branch, tag or full 40-char SHA
    ```
-   Every browser-tool run also reports where its launch time went
+   Every navigera run also reports where its launch time went
    (`BT_TIMINGS`: devtools_url, ws_connect, first_page, close) in the table.
 4. **Windows** has no local loop here (no Windows target in the sandbox):
    `ci.yml`'s `windows` job builds, lints and runs every test on the
@@ -113,7 +113,7 @@ If something you need isn't there, add an annotation for it (see
    Gemini CLI does the five Acme tasks with each tool, one parallel job per
    tool, each on its own key slot (`GEMINI_API_KEY`, `_2`, `_3`; free quota
    is per Google Cloud project). Free-tier quota is per day, so narrow it
-   with `-f tools=browser-tool -f tasks=purchase` while iterating.
+   with `-f tools=navigera -f tasks=purchase` while iterating.
    `purchase-live` (saucedemo.com) runs only when named. `--agent scripted` runs the same checks locally without
    a model:
    ```sh
@@ -164,6 +164,8 @@ If something you need isn't there, add an annotation for it (see
 | CDP over `--remote-debugging-pipe` instead of a WebSocket port | no speed gain (pipe 0.31 s cold vs master's WebSocket 0.31 s); kept as default because it opens no TCP port and Chrome exits with its driver (WebSocket leaks the browser: `killed_session_server_takes_its_browser_down`) | 37465364738 |
 | chrome-headless-shell instead of Chrome (`bt-shell`) | session 0.66 → 0.32 s, cold 0.31 → 0.10 s, browser PSS 356 → 228 MB; used when no system Chrome is installed (cache lookup), or via `$CHROME_BIN` | 37465364738 |
 | new ops, dialog/popup/navigation tracking, text `ax` | no session cost: 0.65 → 0.66 s vs master | 37465364738 |
+| `Network.enable` per tab + `ax`/`screenshot` wait for in-flight fetch/XHR (500 ms quiet, ≤3 s) | no session cost: 0.51 vs 0.49 s, cold 0.23 s both | 37619224427 |
+| that wait + skill line "chain sure steps, end with `ax`" (agent eval, purchase+account ×2) | median turns 18 → 10, tokens 288K → 167K, 4/4 both | 37619227942 vs 37619231246 |
 
 ## 5. Measurement rules
 
@@ -203,12 +205,17 @@ If something you need isn't there, add an annotation for it (see
 
 ## 6. Repo hygiene and history
 
+- **Releasing:** bump `version` in `Cargo.toml` on master, then Actions →
+  release → Run workflow with that version (the GitHub app works). The run
+  checks the version, builds five targets and creates tag + release itself.
+  Agents: never publish a release (or push a tag) yourself — dispatch with
+  `-f publish=false` for a dry run and leave the real one to the owner.
 - Master history is curated (reset to a single commit on 2026-10-06). Work on
   a branch, squash to meaningful commits, no "debug"/"temp"/"diagnostic"
   commits on master. Don't force-push master unless the owner asks.
 - Outputs go to `bench/ladder/out/` (gitignored). Never commit cookie jars,
   reports or page dumps from other tools run in this checkout.
-- Keep `.claude/skills/browser-tool/SKILL.md`, `docs/browser-tool.md`,
+- Keep `.claude/skills/navigera/SKILL.md`, `docs/navigera.md`,
   `llms.txt` and the `OPS` table in `src/protocol.rs` (`--help`) in step
   with the CLI whenever ops or flags change. The skill is compiled into the
   binary, so a stale skill ships with the next release.
@@ -217,16 +224,18 @@ If something you need isn't there, add an annotation for it (see
 
 | path | what |
 |---|---|
-| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation state), `ax.rs` (snapshot tree), `procjob.rs` (Windows kill-on-close job) |
+| `src/cdp/` | from-scratch CDP engine: transport, client (+`BT_CDP_TRACE`), browser, page (ops), `events.rs` (dialogs, popups, navigation and fetch/XHR state), `ax.rs` (snapshot tree), `attach.rs` (`--attach` endpoint discovery, `--profile` browser), `procjob.rs` (Windows kill-on-close job) |
+| `src/proc.rs` | detached spawn (session servers, `--profile` browsers) |
 | `src/protocol.rs` | CLI parsing + JSON-lines protocol + `Driver` |
 | `src/session.rs` | named sessions (`--session`, `start`): Unix socket; loopback TCP + token file on Windows |
 | `src/timing.rs` | `BT_TIMINGS=1` phase timings printed at shutdown |
 | `tests/serve_roundtrip.rs` | serve protocol + named session e2e |
 | `tests/site_scenarios.rs` | realistic end-to-end flow on the Acme site (SPA, iframes, shadow DOM, dialogs, popups, login, upload, slow load) |
+| `tests/attach.rs` | `--attach` / `--profile`: the browser and the user's tabs survive `quit`, cookies persist, one-shot attach refused |
 | `tests/edge_cases.rs` | one regression test per reproduced bug (hung loads, browser death, slow popups, styled checkboxes, cross-origin iframes, caller-relative paths); pages in `tests/fixtures/edge_site.py` |
 | `bench/site/server.py` | Acme Supply: deterministic local shop with state at `/__state` |
-| `bench/agent-eval/` | LLM agent eval (Gemini CLI) across browser-tool / playwright-cli / agent-browser |
+| `bench/agent-eval/` | LLM agent eval (Gemini CLI) across navigera / playwright-cli / agent-browser |
 | `tools/` | `cdp_check.py`, `protocol_dump.sh`, `cft_matrix.py` (Chrome for Testing matrix) |
-| `.claude/skills/browser-tool/SKILL.md` | the agent guide, embedded in the binary (`browser-tool skill`) |
+| `.claude/skills/navigera/SKILL.md` | the agent guide, embedded in the binary (`navigera skill`) |
 | `bench/ladder/` | driver ladder: `ladder.py` (harness), `contenders/` (incl. `cli_agent.py` for the agent CLI scenario), `annotate.py` |
-| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix, Windows, install.sh/install.ps1), `bench.yml` (manual), `agent-eval.yml` (manual/weekly, parallel per tool), `agent-check.yml` (push/PR/nightly natural purchase checks, Linux + Windows), `vendor.yml`, `release.yml` (tags) |
+| `.github/workflows/` | `ci.yml` (push/PR/weekly: tests, CDP check, Chrome matrix, Windows, install.sh/install.ps1), `bench.yml` (manual), `agent-eval.yml` (manual/weekly, parallel per tool), `agent-check.yml` (push/PR/nightly natural purchase checks, Linux + Windows), `vendor.yml`, `release.yml` (one-tap: dispatch with `version`, or a `v*` tag) |

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 fn tool_exe() -> String {
-    env!("CARGO_BIN_EXE_browser-tool").to_string()
+    env!("CARGO_BIN_EXE_navigera").to_string()
 }
 
 /// The fixture servers are Python; Windows installs it as `python`.
@@ -20,7 +20,7 @@ fn python() -> &'static str {
 
 /// Same resolver as the tool; `BT_REQUIRE_BROWSER=1` (CI) forbids skipping.
 fn chrome_available() -> bool {
-    let found = browser_tool::browser::resolve_executable_for(None, true).is_some();
+    let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
         found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
         "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
@@ -82,7 +82,7 @@ impl Session {
             cmd.current_dir(dir);
         }
         let started = Instant::now();
-        let out = cmd.output().expect("run browser-tool");
+        let out = cmd.output().expect("run navigera");
         let took = started.elapsed();
         let text = String::from_utf8_lossy(&out.stdout);
         let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| {
@@ -357,7 +357,7 @@ fn ax_json_format_contract() {
 }
 
 /// With the pipe transport (default), Chrome reads EOF on its command pipe
-/// and exits when browser-tool dies, so a killed session server leaks no
+/// and exits when navigera dies, so a killed session server leaks no
 /// browser. (Over a WebSocket port the browser would keep running.)
 #[cfg(target_os = "linux")]
 #[test]
@@ -436,4 +436,24 @@ fn killed_session_server_takes_its_browser_down() {
     }
     let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &browser.to_string()]).status();
     panic!("browser {browser} outlived its killed session server by 5 s");
+}
+
+/// `ax` right after `goto` shows what a single-page app fetched, not its
+/// "Loading…" placeholder: snapshots wait (bounded) for in-flight fetch/XHR
+/// data, which saves agents a turn per page.
+#[test]
+fn ax_waits_for_fetched_content() {
+    if !chrome_available() {
+        return;
+    }
+    let site = start_site();
+    let s = Session::start("spa");
+    s.ok(&["goto", &format!("{}/spa", site.base)]);
+    let (r, took) = s.run(&["ax"]);
+    let tree = r["result"].as_str().unwrap_or_default().to_string();
+    assert!(tree.contains("Loaded 3 items"), "ax read the placeholder: {tree}");
+    assert!(took < Duration::from_secs(4), "bounded wait: {took:?}");
+    // A quiet page is read at once.
+    let (_, again) = s.run(&["ax"]);
+    assert!(again < Duration::from_millis(400), "no wait on a quiet page: {again:?}");
 }

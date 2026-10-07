@@ -2,9 +2,9 @@
 // Playwright benchmark: Chrome (headless, node driver) or a Lightpanda CDP server.
 //
 // DEPRECATED: kept only so the old engine A/B in bench/out/ stays reproducible.
-// Realtime browser driving is now `browser-tool` (src/bin/browser-tool.rs):
-// same RustWright+Chromium engine, zero Node.js — `browser-tool eval …`
-// replaces `page.evaluate`, `browser-tool serve` replaces a Playwright session.
+// Realtime browser driving is now `navigera` (src/bin/navigera.rs):
+// same RustWright+Chromium engine, zero Node.js — `navigera eval …`
+// replaces `page.evaluate`, `navigera serve` replaces a Playwright session.
 // Mirrors examples/bench_browser.rs (RustWright): same URLs, same PROBE_JS and
 // same poll pacing, so the two engines are directly comparable.
 //

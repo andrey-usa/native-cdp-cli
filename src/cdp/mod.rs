@@ -14,6 +14,7 @@
 //! browser-level connection, `page` implements the tab-level operations.
 
 pub mod ax;
+pub mod attach;
 mod browser;
 mod client;
 mod events;

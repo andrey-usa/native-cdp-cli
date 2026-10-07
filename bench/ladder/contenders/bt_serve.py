@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Contender: `browser-tool serve` (RustWright + Chrome, no Node).
+"""Contender: `navigera serve` (RustWright + Chrome, no Node).
 
-Drives one warm `browser-tool serve` process through the canonical session
+Drives one warm `navigera serve` process through the canonical session
 over its JSON-lines stdin/stdout protocol, then reports exact per-process
-CPU/RSS for the browser-tool binary itself via wait4 (the Python parent's
+CPU/RSS for the navigera binary itself via wait4 (the Python parent's
 own overhead is excluded).
 
 Modes:
@@ -12,10 +12,10 @@ Modes:
   eval      — warm eval round-trip micro: goto page A, then 200x eval title
               (per-op latencies written to the stats file)
   cold      — not used here; cold start is measured by spawning the one-shot
-              `browser-tool eval` directly from ladder.py
+              `navigera eval` directly from ladder.py
 
 Env:
-  BROWSER_TOOL  path to the browser-tool binary (required)
+  NAVIGERA  path to the navigera binary (required)
   CHROME_BIN    chrome executable override (optional)
   LADDER_BASE   base URL of the fixture server, e.g. http://127.0.0.1:8123
 
@@ -56,7 +56,7 @@ def zombie_cpu_s(pid: int) -> tuple[float, float] | None:
 
 
 def read_phases(stderr_path: str) -> dict:
-    """The `BT_TIMINGS {...}` line browser-tool prints at shutdown, if any."""
+    """The `BT_TIMINGS {...}` line navigera prints at shutdown, if any."""
     try:
         with open(stderr_path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -90,8 +90,8 @@ EVAL_ROWS = "() => document.querySelectorAll('#rows tr').length"
 
 
 class Driver:
-    def __init__(self, browser_tool: str, chrome_bin: str | None, engine: str = "chrome"):
-        argv = [browser_tool, "serve"]
+    def __init__(self, navigera: str, chrome_bin: str | None, engine: str = "chrome"):
+        argv = [navigera, "serve"]
         if engine and engine != "chrome":
             argv += ["--engine", engine]
         if chrome_bin:
@@ -163,7 +163,7 @@ class Driver:
             self._stderr_file.flush()
             with open(self._stderr_file.name) as f:
                 stderr_tail = f.read()[-2000:]
-            raise RuntimeError(f"browser-tool closed stdout on op {op}\nstderr: {stderr_tail}")
+            raise RuntimeError(f"navigera closed stdout on op {op}\nstderr: {stderr_tail}")
         resp = json.loads(line)
         if not resp.get("ok"):
             raise RuntimeError(f"op {op} failed: {resp.get('error')}")
@@ -192,14 +192,14 @@ class Driver:
         self.proc.stdin.close()
         t0 = time.perf_counter()
         # Wait for exit WITHOUT reaping (WNOWAIT): the zombie's /proc stat
-        # still separates browser-tool's own CPU from the CPU of the Chrome
+        # still separates navigera's own CPU from the CPU of the Chrome
         # it reaped. wait4's rusage lumps both together (RUSAGE_BOTH), which
         # is where the "27x more driver CPU than go-rod" came from.
         os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOWAIT)
         zombie = zombie_cpu_s(self.proc.pid)
         _, status, ru = os.wait4(self.proc.pid, 0)
         self._rss_stop = True
-        # Prefer browser-tool's self-reported peak (VmHWM) over wait4's
+        # Prefer navigera's self-reported peak (VmHWM) over wait4's
         # ru_maxrss: the kernel misattributes ~200MB to the child when it
         # has spawned Chrome (proven by /proc sampling: true peak is ~5MB).
         # Fall back to wait4 if the report is missing.
@@ -227,11 +227,11 @@ class Driver:
         wall = time.perf_counter() - t0
         code = os.waitstatus_to_exitcode(status)
         if code != 0:
-            # A crashed/failed browser-tool is a failed run, never a datapoint.
+            # A crashed/failed navigera is a failed run, never a datapoint.
             self._stderr_file.flush()
             with open(self._stderr_file.name) as f:
                 stderr_tail = f.read()[-2000:]
-            raise RuntimeError(f"browser-tool exited with {code}\nstderr: {stderr_tail}")
+            raise RuntimeError(f"navigera exited with {code}\nstderr: {stderr_tail}")
         total_cpu = ru.ru_utime + ru.ru_stime
         own_cpu, reaped_cpu = zombie if zombie else (total_cpu, float("nan"))
         self.cpu_reaped_s = reaped_cpu
@@ -271,7 +271,7 @@ def run_eval_micro(drv: Driver, base: str, n: int) -> tuple[list[float], list[fl
     """(client-side ms incl. the stdin/stdout hop, engine-side ms) per eval.
 
     Client-side is what a program driving `serve` sees; the engine-side
-    `elapsed_ms` (µs resolution) is browser-tool's own CDP round trip and
+    `elapsed_ms` (µs resolution) is navigera's own CDP round trip and
     is the number comparable with in-process drivers like go-rod."""
     drv.cmd({"op": "goto", "url": f"{base}/page_a.html"})
     lat, engine = [], []
@@ -384,8 +384,8 @@ def main() -> int:
     ap.add_argument("--extract-out", default="")
     ap.add_argument("--shot-out", default="")
     ap.add_argument("--n-eval", type=int, default=200)
-    ap.add_argument("--browser-tool", default="",
-                    help="browser-tool binary (default $BROWSER_TOOL); the ladder's "
+    ap.add_argument("--navigera", default="",
+                    help="navigera binary (default $NAVIGERA); the ladder's "
                          "A/B baseline contender passes a second build here")
     ap.add_argument("--engine", default="chrome",
                     help="browser engine: chrome, edge, brave, lightpanda")
@@ -397,9 +397,9 @@ def main() -> int:
     if args.transport:
         os.environ["BT_CDP_TRANSPORT"] = args.transport
 
-    browser_tool = args.browser_tool or os.environ["BROWSER_TOOL"]
+    navigera = args.navigera or os.environ["NAVIGERA"]
     # CHROME_BIN is only a fallback for the chrome engine. Passing it to
-    # `--engine lightpanda` made browser-tool launch `google-chrome serve ...`
+    # `--engine lightpanda` made navigera launch `google-chrome serve ...`
     # as if it were lightpanda (its --chromium flag doubles as the lightpanda
     # binary override), which then never exposed /json/version.
     chrome_bin = args.chromium or (
@@ -408,7 +408,7 @@ def main() -> int:
 
     t0 = time.perf_counter()
     print("PYTHON: starting", file=sys.stderr, flush=True)
-    drv = Driver(browser_tool, chrome_bin, args.engine)
+    drv = Driver(navigera, chrome_bin, args.engine)
     print("PYTHON: driver created", file=sys.stderr, flush=True)
     run_error = None
     realworld: dict = {}
@@ -466,11 +466,11 @@ def main() -> int:
     if PROFILE and drv.prof:
         # stdout is not parsed for bt-serve (harness reads the stats file),
         # so the table is safe here; ladder.py echoes it into ladder.log.
-        print("[profile] per-op wall/cpu for browser-tool:")
+        print("[profile] per-op wall/cpu for navigera:")
         for op, w, c in drv.prof:
             print(f"[profile]   {op:12s} wall {w:8.2f} ms  cpu {c:8.2f} ms")
     if PROFILE and drv.rss_prof:
-        print("[profile] per-op RSS KB for browser-tool:")
+        print("[profile] per-op RSS KB for navigera:")
         for op, rss in drv.rss_prof:
             print(f"[profile]   {op:12s} rss {rss} KB")
     if PROFILE:
@@ -481,7 +481,7 @@ def main() -> int:
         print(f"[profile] RUSAGE_CHILDREN maxrss: {_ru_children.ru_maxrss} KB")
         if drv._vmm_hwm is not None:
             print(f"[profile] /proc VmHWM just before wait4: {drv._vmm_hwm} KB")
-        # browser-tool's own VmHWM report (BT_RSS_REPORT=1 in env)
+        # navigera's own VmHWM report (BT_RSS_REPORT=1 in env)
         try:
             with open(drv._stderr_file.name) as f:
                 for line in f:

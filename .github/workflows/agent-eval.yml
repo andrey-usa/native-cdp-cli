@@ -2,16 +2,18 @@ name: agent-eval
 
 # A real, generic agent (Gemini CLI, headless, free-tier API key) does
 # realistic tasks on the local Acme Supply site with each browser tool:
-# browser-tool vs agent-browser vs playwright-cli. One job per tool, in
+# navigera vs agent-browser vs playwright-cli. One job per tool, in
 # parallel; a report job merges them. See bench/agent-eval/run.py.
 #
 # Keys are secrets of the `main` environment. Gemini's free quota is per
 # Google Cloud project, so each tool job reads its own slot and falls back
 # to GEMINI_API_KEY when that slot is empty:
-#   browser-tool   -> GEMINI_API_KEY
+#   navigera   -> GEMINI_API_KEY
 #   agent-browser  -> GEMINI_API_KEY_2
 #   playwright-cli -> GEMINI_API_KEY_3
-# Without any key only the scripted baseline runs.
+# Windows legs use the next slot (navigera -> _2, agent-browser -> _3,
+# playwright-cli -> GEMINI_API_KEY). Without any key only the scripted
+# baseline runs.
 #
 # `os: windows` (or `both`) runs the same jobs on windows-latest: the agent's
 # shell is PowerShell there, and rows read `<tool> (windows)`.
@@ -23,8 +25,8 @@ on:
   workflow_dispatch:
     inputs:
       tools:
-        description: "comma-separated: browser-tool,agent-browser,playwright-cli"
-        default: "browser-tool,agent-browser,playwright-cli"
+        description: "comma-separated: navigera,agent-browser,playwright-cli"
+        default: "navigera,agent-browser,playwright-cli"
       tasks:
         description: "comma-separated task ids (lookup,purchase,account,docs,support,purchase-live) or all (local tasks)"
         default: "all"
@@ -54,18 +56,22 @@ jobs:
     steps:
       - id: m
         env:
-          TOOLS: ${{ inputs.tools || 'browser-tool,agent-browser,playwright-cli' }}
+          TOOLS: ${{ inputs.tools || 'navigera,agent-browser,playwright-cli' }}
           OSES: ${{ inputs.os || 'linux' }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os
-          slot = {"browser-tool": "GEMINI_API_KEY", "agent-browser": "GEMINI_API_KEY_2",
+          slot = {"navigera": "GEMINI_API_KEY", "agent-browser": "GEMINI_API_KEY_2",
                   "playwright-cli": "GEMINI_API_KEY_3"}
+          # Windows legs take the next slot over, so `os: both` spreads the
+          # load over the keys instead of doubling it on each.
+          rotate = {"GEMINI_API_KEY": "GEMINI_API_KEY_2", "GEMINI_API_KEY_2": "GEMINI_API_KEY_3",
+                    "GEMINI_API_KEY_3": "GEMINI_API_KEY"}
           runner = {"linux": "ubuntu-latest", "windows": "windows-latest"}
           oses = ["linux", "windows"] if os.environ["OSES"] == "both" else \
                  [o for o in os.environ["OSES"].split(",") if o in runner]
           tools = [t.strip() for t in os.environ["TOOLS"].split(",") if t.strip() in slot]
-          print("matrix=" + json.dumps([{"tool": t, "key": slot[t], "os": o, "runner": runner[o]}
+          print("matrix=" + json.dumps([{"tool": t, "key": slot[t] if o == "linux" else rotate[slot[t]], "os": o, "runner": runner[o]}
                                         for o in oses for t in tools]))
           EOF
 
@@ -94,7 +100,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/agent-setup
       - name: Scripted baseline (site + checks + harness, no model)
-        if: matrix.run.tool == 'browser-tool'
+        if: matrix.run.tool == 'navigera'
         run: |
           rc=0
           python bench/agent-eval/run.py --agent scripted --reps "$REPS" --out out/scripted --require-pass || rc=$?
@@ -135,7 +141,7 @@ jobs:
           python bench/agent-eval/run.py --mode onboard --tools "$TOOL" --model "$MODEL" \
             --gemini "$GEMINI_BIN" --reps 1 --out out/gemini
       - name: Install the tool (for skilled runs)
-        if: "!cancelled() && env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && env.TOOL != 'browser-tool' && steps.smoke.outcome == 'success'"
+        if: "!cancelled() && env.HAS_KEY == 'true' && (env.MODE == 'skilled' || env.MODE == 'both') && env.TOOL != 'navigera' && steps.smoke.outcome == 'success'"
         run: |
           case "$TOOL" in
             agent-browser) npm install -g agent-browser@0.38.2 ;;

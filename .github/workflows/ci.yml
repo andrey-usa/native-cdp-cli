@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 30
     env:
       # A source build (no release yet) builds the commit under test.
-      BROWSER_TOOL_GIT_REV: ${{ github.sha }}
+      NAVIGERA_GIT_REV: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -121,9 +121,9 @@ jobs:
         run: |
           rustup default stable
           cd "$RUNNER_TEMP"
-          BROWSER_TOOL_INSTALL_DIR="$RUNNER_TEMP/bin" sh "$GITHUB_WORKSPACE/install.sh" 2>&1 | tail -5 | tee /tmp/install.log
-          "$RUNNER_TEMP/bin/browser-tool" --version || { python3 "$GITHUB_WORKSPACE/bench/ladder/annotate.py" /tmp/install.log "install.sh failure"; exit 1; }
-          "$RUNNER_TEMP/bin/browser-tool" skill | head -3
+          NAVIGERA_INSTALL_DIR="$RUNNER_TEMP/bin" sh "$GITHUB_WORKSPACE/install.sh" 2>&1 | tail -5 | tee /tmp/install.log
+          "$RUNNER_TEMP/bin/navigera" --version || { python3 "$GITHUB_WORKSPACE/bench/ladder/annotate.py" /tmp/install.log "install.sh failure"; exit 1; }
+          "$RUNNER_TEMP/bin/navigera" skill | head -3
       - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
@@ -134,7 +134,7 @@ jobs:
         run: |
           rustup default stable
           Set-Location $env:RUNNER_TEMP
-          $env:BROWSER_TOOL_INSTALL_DIR = "$env:RUNNER_TEMP\bin"
+          $env:NAVIGERA_INSTALL_DIR = "$env:RUNNER_TEMP\bin"
           $log = "$env:RUNNER_TEMP\install.log"
           # The repo's script (the published URL serves master's copy).
           try {
@@ -143,7 +143,7 @@ jobs:
           } catch {
             "THROWN: $($_ | Out-String)" | Tee-Object -FilePath $log -Append
           }
-          $exe = "$env:RUNNER_TEMP\bin\browser-tool.exe"
+          $exe = "$env:RUNNER_TEMP\bin\navigera.exe"
           if (-not (Test-Path $exe)) {
             Get-Content $log -Tail 40 | Set-Content "$env:RUNNER_TEMP\install-tail.log"
             python "$env:GITHUB_WORKSPACE\bench\ladder\annotate.py" "$env:RUNNER_TEMP\install-tail.log" "install.ps1 failure"
@@ -152,7 +152,7 @@ jobs:
           & $exe --version
           & $exe skill | Select-Object -First 3
           # Installed for this session too: the bare name resolves.
-          (Get-Command browser-tool).Source
+          (Get-Command navigera).Source
 
   # Chrome for Testing builds: the current Stable and three milestones back,
   # chrome-headless-shell, and Beta (non-blocking early warning).

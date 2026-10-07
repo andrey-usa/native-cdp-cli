@@ -7,7 +7,7 @@ run in CI (`.github/workflows/bench.yml`) on identical hardware.
 
 | contender | driver | runtime |
 |---|---|---|
-| `bt-serve` | `browser-tool serve` — this repo (RustWright + Chrome) | native, no Node |
+| `bt-serve` | `navigera serve` — this repo (RustWright + Chrome) | native, no Node |
 | `playwright` | `playwright-core`, `channel: 'chrome'` | Node |
 | `puppeteer` | `puppeteer-core`, system Chrome | Node |
 | `chromiumoxide` | `chromiumoxide` 0.7 (bench-only crate in `contenders/`) | native Rust |
@@ -39,7 +39,7 @@ Plus two micros: **warm eval round-trip** (200× `() => document.title`) and
 
 * **wall** — best of N, `perf_counter` around the run.
 * **driver CPU / peak RSS** — exact, `os.wait4` on the driver process itself
-  (the `browser-tool` binary for `bt-serve`, node for the JS contenders).
+  (the `navigera` binary for `bt-serve`, node for the JS contenders).
 * **chrome CPU / peak RSS** — sampled from `/proc` every 50 ms over the
   chrome process tree; approximate, marked `*`.
 * **correctness** — every contender must produce identical normalized
@@ -51,12 +51,12 @@ Plus two micros: **warm eval round-trip** (200× `() => document.title`) and
 ```text
 # from the repo root
 python3 bench/ladder/gen_fixtures.py
-cargo build --release --bin browser-tool
+cargo build --release --bin navigera
 cargo build --release --manifest-path bench/ladder/contenders/chromiumoxide/Cargo.toml
 cd bench/ladder/contenders/chromedp && go mod tidy && go build -o ladder-chromedp . && cd ../..
 cd bench/ladder/contenders/gorod && go mod tidy && go build -o ladder-gorod . && cd ../..
 cd bench/ladder && npm install
-BROWSER_TOOL=$PWD/../../target/release/browser-tool \
+NAVIGERA=$PWD/../../target/release/navigera \
 CHROME_BIN=$(which google-chrome) \
 python3 ../ladder/ladder.py --out-dir out
 ```

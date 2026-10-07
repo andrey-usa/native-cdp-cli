@@ -10,14 +10,14 @@ title, rows) plus one accessibility snapshot, the agent's usual way to look
 at a page.
 
 Tools:
-  bt      browser-tool --session <name> <op>          (Rust, this repo)
+  bt      navigera --session <name> <op>          (Rust, this repo)
   ab      agent-browser --session <name> --json <op>  (Vercel Labs, Rust daemon)
   pw      playwright-cli -s=<name> <op>               (Microsoft, Playwright daemon)
   pwmcp   @playwright/mcp over stdio                   (Microsoft, MCP)
   cdmcp   chrome-devtools-mcp over stdio               (Google, Puppeteer, MCP)
 
 Prints one JSON line: {tool, wall_s, steps:[{op, ms}], snapshot_bytes,
-counts, extract_out}. Env: BROWSER_TOOL, CHROME_BIN, LADDER_BASE,
+counts, extract_out}. Env: NAVIGERA, CHROME_BIN, LADDER_BASE,
 AGENT_BROWSER, PLAYWRIGHT_CLI, PLAYWRIGHT_MCP, CHROME_DEVTOOLS_MCP (binaries).
 """
 import argparse
@@ -57,7 +57,7 @@ def result_of(tool: str, out: str):
     doc = json.loads(out.strip().splitlines()[-1])
     if tool == "bt":
         if not doc.get("ok"):
-            raise RuntimeError(f"browser-tool error: {doc.get('error')}")
+            raise RuntimeError(f"navigera error: {doc.get('error')}")
         return doc.get("result")
     if not doc.get("success", False):
         raise RuntimeError(f"agent-browser error: {doc.get('error')}")
@@ -149,7 +149,7 @@ def run_cli(tool: str, args, base: str, env: dict):
     s = args.session
     cwd = None
     if tool == "bt":
-        exe = os.environ["BROWSER_TOOL"]
+        exe = os.environ["NAVIGERA"]
 
         def cmd(*a):
             return [exe, "--session", s, *a]

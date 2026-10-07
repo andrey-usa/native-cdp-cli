@@ -1,4 +1,4 @@
-//! Serve-protocol roundtrip test: drives `browser-tool serve` with `data:` URLs (no network).
+//! Serve-protocol roundtrip test: drives `navigera serve` with `data:` URLs (no network).
 //! Needs a real Chrome/Chromium/Edge binary; skipped where none is installed.
 
 use std::io::{BufRead, Write};
@@ -9,9 +9,9 @@ use serde_json::Value;
 fn tool_exe() -> std::path::PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
     let name = if cfg!(windows) {
-        "browser-tool.exe"
+        "navigera.exe"
     } else {
-        "browser-tool"
+        "navigera"
     };
     // Integration tests live in `target/<profile>/deps/`; the tool binary is
     // two levels up in `target/<profile>/`.
@@ -26,13 +26,13 @@ fn tool_exe() -> std::path::PathBuf {
         .expect("tool binary path");
     assert!(
         parent.exists(),
-        "build the tool first: cargo build --bin browser-tool ({})",
+        "build the tool first: cargo build --bin navigera ({})",
         parent.display()
     );
     parent
 }
 
-/// Spawn `browser-tool serve` with piped stdio for a scripted session.
+/// Spawn `navigera serve` with piped stdio for a scripted session.
 fn spawn_serve(extra: &[&str]) -> (Child, std::io::BufWriter<std::process::ChildStdin>) {
     let tool = tool_exe();
     let mut child = Command::new(&tool)
@@ -42,7 +42,7 @@ fn spawn_serve(extra: &[&str]) -> (Child, std::io::BufWriter<std::process::Child
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn browser-tool serve");
+        .expect("spawn navigera serve");
     let stdin = child.stdin.take().expect("piped stdin");
     (child, std::io::BufWriter::new(stdin))
 }
@@ -62,11 +62,11 @@ fn roundtrip(
 }
 
 /// True when the tool itself would find a browser to launch (same resolver
-/// as `browser-tool`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
+/// as `navigera`: $CHROME_BIN, system Chrome, Playwright/Puppeteer
 /// caches). `BT_REQUIRE_BROWSER=1` (set in CI) turns a skip into a failure,
 /// so a runner without Chrome can't pass the e2e tests by skipping them.
 fn chrome_available() -> bool {
-    let found = browser_tool::browser::resolve_executable_for(None, true).is_some();
+    let found = navigera::browser::resolve_executable_for(None, true).is_some();
     assert!(
         found || std::env::var_os("BT_REQUIRE_BROWSER").is_none(),
         "BT_REQUIRE_BROWSER is set but no Chrome/Chromium was found"
@@ -78,7 +78,7 @@ fn chrome_available() -> bool {
 /// network or real browser behavior is asserted — only the protocol contract.
 /// Needs a Chrome binary; skipped where none is installed.
 #[test]
-fn browser_tool_serve_protocol_roundtrip() {
+fn navigera_serve_protocol_roundtrip() {
     if !chrome_available() {
         eprintln!("skipping: no Chrome/Chromium/Edge binary installed");
         return;
@@ -260,13 +260,13 @@ fn browser_tool_serve_protocol_roundtrip() {
     assert!(status.success(), "serve exit status: {status}");
 }
 
-/// Run `browser-tool <args>` to completion; returns (success, stdout JSON).
+/// Run `navigera <args>` to completion; returns (success, stdout JSON).
 fn run_tool(args: &[&str]) -> (bool, Value) {
     let out = Command::new(tool_exe())
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .expect("run browser-tool");
+        .expect("run navigera");
     let text = String::from_utf8_lossy(&out.stdout);
     let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| {
         panic!(
@@ -277,20 +277,20 @@ fn run_tool(args: &[&str]) -> (bool, Value) {
     (out.status.success(), value)
 }
 
-/// Run `browser-tool <args>`; returns (success, raw stdout).
+/// Run `navigera <args>`; returns (success, raw stdout).
 fn run_tool_raw(args: &[&str]) -> (bool, String) {
     let out = Command::new(tool_exe())
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .expect("run browser-tool");
+        .expect("run navigera");
     (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Named session: a detached server keeps one browser warm across separate
 /// processes — the way an agent's shell tool calls arrive.
 #[test]
-fn browser_tool_named_session_across_processes() {
+fn navigera_named_session_across_processes() {
     if !chrome_available() {
         eprintln!("skipping: no Chrome/Chromium/Edge binary installed");
         return;

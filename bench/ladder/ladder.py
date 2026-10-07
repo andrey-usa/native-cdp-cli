@@ -2,10 +2,10 @@
 """Browser-driver ladder: same scripted session, CDP drivers, one table.
 
 Contenders (each drives the same headless Chrome on the same fixture pages):
-  bt-serve        browser-tool serve on Chrome (this repo: from-scratch Rust CDP engine)
-  bt-edge         browser-tool serve on Microsoft Edge
-  bt-brave        browser-tool serve on Brave
-  bt-lightpanda   browser-tool serve on Lightpanda (headless Chromium for AI agents)
+  bt-serve        navigera serve on Chrome (this repo: from-scratch Rust CDP engine)
+  bt-edge         navigera serve on Microsoft Edge
+  bt-brave        navigera serve on Brave
+  bt-lightpanda   navigera serve on Lightpanda (headless Chromium for AI agents)
   playwright      playwright-core + channel:chrome (Node)
   puppeteer       puppeteer-core (Node)
   chromiumoxide   chromiumoxide 0.7 (native Rust CDP)
@@ -26,13 +26,13 @@ Accounting (house style, cf. gruppera bench-200m.yml):
     /proc/<pid>/stat while it is a zombie (waitid WNOWAIT), before reaping.
     NOT wait4's rusage: that is RUSAGE_BOTH, i.e. it also contains every
     descendant the driver reaped. Drivers that wait() on their Chrome child
-    (browser-tool, chromedp, puppeteer, playwright) were charged Chrome's CPU
+    (navigera, chromedp, puppeteer, playwright) were charged Chrome's CPU
     and peak RSS that way; drivers that leave Chrome to be reaped elsewhere
     (go-rod's leakless helper, chromiumoxide) were not. The reaped-children
     share is still recorded as `cpu_reaped_s` for transparency.
   * driver peak RSS: VmHWM of the driver process itself, sampled every
     20 ms from /proc (VmHWM is monotonic, so the last sample is the peak up
-    to <=20 ms before exit). For bt-* the driver is the `browser-tool` child
+    to <=20 ms before exit). For bt-* the driver is the `navigera` child
     of contenders/bt_serve.py, measured the same way there.
   * browser CPU / memory: the browser process tree below each driver run
     (found by parent links, so helpers like go-rod's leakless are crossed),
@@ -44,7 +44,7 @@ Correctness: every contender must produce identical normalized
 result, row count). The ladder aborts the table on mismatch.
 
 Env:
-  BROWSER_TOOL   path to the release browser-tool binary (required)
+  NAVIGERA   path to the release navigera binary (required)
   CHROME_BIN     chrome executable (required)
   LADDER_BASE    fixture server base URL (set by this script itself)
   LADDER_REPS    session repetitions (default 3)
@@ -67,19 +67,19 @@ HERE = Path(__file__).resolve().parent
 CONTENDERS = HERE / "contenders"
 FIXTURES = HERE / "fixtures"
 
-# browser-tool engine variants populated by main(): name -> extra bt_serve.py args.
+# navigera engine variants populated by main(): name -> extra bt_serve.py args.
 # e.g. {"bt-serve": [], "bt-edge": ["--engine", "chrome", "--chromium", "/path"]}
 BT_ENGINE_ARGS: dict[str, list[str]] = {}
 
-# browser-tool binary per bt-* contender (default $BROWSER_TOOL). The A/B
-# contender `bt-baseline` runs a second build ($BROWSER_TOOL_BASELINE, e.g.
+# navigera binary per bt-* contender (default $NAVIGERA). The A/B
+# contender `bt-baseline` runs a second build ($NAVIGERA_BASELINE, e.g.
 # master) on the same machine in the same run — the only fair way to judge a
 # perf change, since GitHub runners vary between runs.
 BT_BINARY: dict[str, str] = {}
 
 
 def parse_phases(text: str) -> dict:
-    """browser-tool's `BT_TIMINGS {...}` shutdown line, if present."""
+    """navigera's `BT_TIMINGS {...}` shutdown line, if present."""
     for line in text.splitlines():
         if line.startswith("BT_TIMINGS "):
             try:
@@ -107,7 +107,7 @@ OPTIONAL_SCENARIOS = ("eval", "cold", "realworld", "browse", "agent")
 
 
 def is_bt(name: str) -> bool:
-    """True for browser-tool contenders (bt-serve, bt-edge, ...)."""
+    """True for navigera contenders (bt-serve, bt-edge, ...)."""
     return name in BT_ENGINE_ARGS
 
 CLK_TCK = os.sysconf("SC_CLK_TCK")
@@ -190,7 +190,7 @@ def proc_table() -> dict[int, tuple[int, str]]:
 
 def browser_descendants(root: int, table: dict[int, tuple[int, str]]) -> list[int]:
     """Browser processes anywhere below `root` (through helpers like go-rod's
-    leakless or bt_serve.py -> browser-tool)."""
+    leakless or bt_serve.py -> navigera)."""
     kids: dict[int, list[int]] = {}
     for pid, (ppid, _) in table.items():
         kids.setdefault(ppid, []).append(pid)
@@ -430,11 +430,11 @@ def bench_session(name: str, argv: list[str], env: dict, out_dir: Path,
         detail: dict = {}
         wall, cpu, rss, out = run_once(cmd, run_env, timeout_s, chrome_tag, detail)
         if is_bt(name):
-            # browser-tool's own CPU/RSS come from bt_serve.py, which measures
-            # its browser-tool child exactly like run_once measures drivers.
+            # navigera's own CPU/RSS come from bt_serve.py, which measures
+            # its navigera child exactly like run_once measures drivers.
             with open(stats, encoding="utf-8") as f:
                 bst = json.load(f)
-            # Tool wall is the browser-tool process's own wall (launch ->
+            # Tool wall is the navigera process's own wall (launch ->
             # quit); the Python parent's spawn overhead is excluded, matching
             # the node contenders where wall == driver process wall.
             wall, cpu, rss = bst["wall_s"], bst["cpu_s"], bst["maxrss_kb"]
@@ -485,7 +485,7 @@ def bench_eval(name: str, argv: list[str], env: dict, out_dir: Path,
         sessions.append({"mean_ms": sum(lat) / len(lat),
                          "p95_ms": percentile(lat, 0.95),
                          "wall_s": wall, "n": len(lat),
-                         # browser-tool's own (engine-side) round trip, without
+                         # navigera's own (engine-side) round trip, without
                          # the stdin/stdout hop to its client.
                          **({"engine_mean_ms": sum(engine) / len(engine),
                              "engine_p95_ms": percentile(engine, 0.95)} if engine else {})})
@@ -625,9 +625,9 @@ def bench_cold(name: str, argv: list[str], env: dict, chrome_tag: str) -> dict:
     for rep in range(5):
         if is_bt(name):
             # one-shot mode: process start + browser launch + one eval + close
-            # (bt_serve.py-only args like --browser-tool don't apply here)
-            extra = [a for a in BT_ENGINE_ARGS[name] if a not in ("--browser-tool", BT_BINARY.get(name))]
-            cmd = [BT_BINARY.get(name, env["BROWSER_TOOL"]), "eval", "--expression",
+            # (bt_serve.py-only args like --navigera don't apply here)
+            extra = [a for a in BT_ENGINE_ARGS[name] if a not in ("--navigera", BT_BINARY.get(name))]
+            cmd = [BT_BINARY.get(name, env["NAVIGERA"]), "eval", "--expression",
                    "() => 1 + 1", *extra]
             # bt-serve / bt-baseline (chrome) need --chromium; variants carry it
             if name in ("bt-serve", "bt-baseline"):
@@ -652,7 +652,7 @@ AGENT_DAEMON_MARKERS = (b"agent-browser", b"playwright-cli", b"@playwright/cli",
 def kill_agent_daemons() -> None:
     """agent-browser / playwright-cli leave their daemons idling after
     `close`; stop them (and any MCP server) so each rep starts cold like the
-    browser-tool one does."""
+    navigera one does."""
     me = os.getpid()
     for pid, (_, name) in proc_table().items():
         if pid == me:
@@ -845,7 +845,7 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    browser_tool = os.environ["BROWSER_TOOL"]
+    navigera = os.environ["NAVIGERA"]
     chrome_bin = os.environ["CHROME_BIN"]
     chrome_tag = os.path.basename(chrome_bin)
 
@@ -863,12 +863,12 @@ def main() -> int:
         **os.environ,
         "LADDER_BASE": base,
         "CHROME_BIN": chrome_bin,
-        "BROWSER_TOOL": browser_tool,
+        "NAVIGERA": navigera,
         "DISABLE_TELEMETRY": "1",
         "DO_NOT_TRACK": "1",
     }
     node_dir = CONTENDERS
-    # browser-tool engine variants: name -> (engine flag, env var for binary).
+    # navigera engine variants: name -> (engine flag, env var for binary).
     # Variants are skipped gracefully when their binary is unavailable.
     BT_ENGINES = {
         "bt-serve": ("chrome", "CHROME_BIN"),
@@ -884,14 +884,14 @@ def main() -> int:
     contenders: dict[str, list[str]] = {}
     bt_engine_args: dict[str, list[str]] = {}
     for bt_name, (engine, bin_env) in BT_ENGINES.items():
-        BT_BINARY[bt_name] = browser_tool
+        BT_BINARY[bt_name] = navigera
         if bt_name == "bt-baseline":
-            baseline = os.environ.get("BROWSER_TOOL_BASELINE")
+            baseline = os.environ.get("NAVIGERA_BASELINE")
             if not baseline or not Path(baseline).exists():
                 continue  # A/B only on request; not "skipped"
             BT_BINARY[bt_name] = baseline
             contenders[bt_name] = []
-            BT_ENGINE_ARGS[bt_name] = ["--browser-tool", baseline]
+            BT_ENGINE_ARGS[bt_name] = ["--navigera", baseline]
             continue
         if bin_env is not None:
             binary = os.environ.get(bin_env)
@@ -985,7 +985,7 @@ def main() -> int:
         except Exception as e:
             if name in EXPERIMENTAL:
                 print(f"== {name}: SKIPPED (session failed: {e})", flush=True)
-                # Tail of the error: where browser-tool's own message lands.
+                # Tail of the error: where navigera's own message lands.
                 SKIPPED[name] = " ".join(str(e).split())[-700:]
                 BT_ENGINE_ARGS.pop(name, None)
                 contenders.pop(name)
@@ -1022,12 +1022,12 @@ def main() -> int:
         import shutil
         tools: dict[str, list[str]] = {}
         if "bt-serve" in contenders:
-            tools["browser-tool"] = ["--tool", "bt"]
+            tools["navigera"] = ["--tool", "bt"]
         # `--only` narrows the main contenders; the agent scenario always
         # runs every agent CLI that is installed.
         shell = os.environ.get("SHELL_BIN")
         if "bt-serve" in contenders and shell and Path(shell).exists():
-            tools["browser-tool (headless shell)"] = ["--tool", "bt", "--chrome", shell]
+            tools["navigera (headless shell)"] = ["--tool", "bt", "--chrome", shell]
         for label, tool, env_var, binary, hint in [
             ("agent-browser", "ab", "AGENT_BROWSER", "agent-browser", "npm i -g agent-browser"),
             ("playwright-cli", "pw", "PLAYWRIGHT_CLI", "playwright-cli", "npm i -g @playwright/cli"),
@@ -1146,7 +1146,7 @@ def main() -> int:
                   if results[n].get("cold") and (results[n]["cold"]["best"].get("phases"))]
     if phase_rows:
         keys = ["devtools_url", "ws_connect", "browser_up", "first_page", "launch_total", "close"]
-        lines.append("### browser-tool cold-start phases (ms, best run; `BT_TIMINGS`)")
+        lines.append("### navigera cold-start phases (ms, best run; `BT_TIMINGS`)")
         lines.append("")
         lines.append("| contender | " + " | ".join(keys) + " |")
         lines.append("|---|" + "---|" * len(keys))

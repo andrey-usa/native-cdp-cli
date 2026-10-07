@@ -1,6 +1,7 @@
-# native-cdp-cli
+# navigera
 
-**`browser-tool`** drives headless Chrome from the shell, one command per step.
+**`navigera`** (formerly `browser-tool`; repo `native-cdp-cli`) drives
+Chrome from the shell, one command per step.
 It is a single native binary (Rust, no Node) that speaks the Chrome DevTools
 Protocol directly, and it is built for AI agents:
 
@@ -14,8 +15,8 @@ Protocol directly, and it is built for AI agents:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/andrey-usa/native-cdp-cli/master/install.sh | sh
-# or: cargo install --locked --git https://github.com/andrey-usa/native-cdp-cli browser-tool
-browser-tool install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
+# or: cargo install --locked --git https://github.com/andrey-usa/native-cdp-cli navigera
+navigera install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 
 Windows (PowerShell):
@@ -28,9 +29,9 @@ Linux, macOS and Windows are supported. On Windows the session socket is a
 loopback TCP port that only accepts clients presenting a random token from
 the session file in your temp directory, CDP runs over a DevTools
 WebSocket, and Chrome sits in a kill-on-close job object, so it still exits
-when browser-tool dies.
+when navigera dies.
 
-browser-tool finds Chrome or Chromium on its own: a system install,
+navigera finds Chrome or Chromium on its own: a system install,
 `$CHROME_BIN`, or a Playwright/Puppeteer browser cache. For the fastest
 cold start, point it at
 [chrome-headless-shell](https://developer.chrome.com/blog/chrome-headless-shell):
@@ -38,20 +39,20 @@ cold start, point it at
 Chrome without its browser UI layer. In the benchmark it cut cold start from
 0.32 s to 0.11 s and the scripted session from 0.66 s to 0.32 s (run
 [37498679296](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37498679296)).
-browser-tool uses a system Chrome first; with none installed it picks
+navigera uses a system Chrome first; with none installed it picks
 chrome-headless-shell (or Chromium) from a Playwright or Puppeteer cache.
 Set `$CHROME_BIN` to choose explicitly.
 
 ## Use (agents and people)
 
 ```sh
-browser-tool -s work start                      # warm headless browser behind a local socket
-browser-tool -s work goto example.com
-browser-tool -s work --raw ax                   # page as an indented tree, [ref=N] on actionable nodes
-browser-tool -s work click 12                   # act on a ref
-browser-tool -s work fill 31 "hello" && browser-tool -s work press Enter
-browser-tool -s work wait --text "Saved"
-browser-tool -s work quit
+navigera -s work start                      # warm headless browser behind a local socket
+navigera -s work goto example.com
+navigera -s work --raw ax                   # page as an indented tree, [ref=N] on actionable nodes
+navigera -s work click 12                   # act on a ref
+navigera -s work fill 31 "hello" && navigera -s work press Enter
+navigera -s work wait --text "Saved"
+navigera -s work quit
 ```
 
 ```text
@@ -75,14 +76,23 @@ The commands are `goto`, `ax`, `click`, `fill`, `type`, `press`, `select`,
   `--text "<visible text>"`.
 - **Output:** every command prints one JSON line, or just the result with
   `--raw`.
-- **Help:** `browser-tool help <command>`.
+- **Help:** `navigera help <command>`.
 - **Agent guide:** the version-matched guide is
-  [`.claude/skills/browser-tool/SKILL.md`](.claude/skills/browser-tool/SKILL.md),
-  also printed by `browser-tool skill`.
-- **Reference:** [docs/browser-tool.md](docs/browser-tool.md) has the full
+  [`.claude/skills/navigera/SKILL.md`](.claude/skills/navigera/SKILL.md),
+  also printed by `navigera skill`.
+- **Reference:** [docs/navigera.md](docs/navigera.md) has the full
   reference, and [llms.txt](llms.txt) is an index for LLMs.
 
-Programs can keep one browser on a pipe instead: `browser-tool serve` reads
+**Your own browser.** `navigera -s me start --attach` works in the Chrome
+you already have open (Chrome 144+, after turning on
+`chrome://inspect/#remote-debugging` once; Chrome asks you to Allow the
+connection), with your logins, settings and extensions.
+`navigera -s me start --profile work` keeps a separate visible browser on
+its own persistent profile instead: sign in once and it stays open between
+sessions. Either way navigera works in a window of its own, and `quit` only
+disconnects. Details: [docs/navigera.md](docs/navigera.md#browsers-and-engines).
+
+Programs can keep one browser on a pipe instead: `navigera serve` reads
 one JSON command per stdin line, for example
 `{"id":1,"op":"goto","url":"https://example.com"}`. The session socket speaks
 the same protocol.
@@ -105,7 +115,7 @@ the automation flags (`--disable-features=OptimizationHints`, bisected with
 `chrome-bisect.yml`), and on Chrome 153 an Enter-submitted form returned
 before its redirect landed. Both are fixed.
 
-Each run also checks **CDP protocol correctness**. browser-tool records
+Each run also checks **CDP protocol correctness**. navigera records
 every command it sends (`BT_CDP_TRACE`), and
 [`tools/cdp_check.py`](tools/cdp_check.py) validates every method, parameter
 and enum value against the `/json/protocol` that *that* browser serves.
@@ -143,7 +153,7 @@ GitHub runners vary between runs, so compare rows within one run.
 read from its zombie's `/proc/<pid>/stat` before reaping (`waitid` with
 `WNOWAIT`), and its own VmHWM. The kernel counts CPU in 10 ms ticks, so
 values under ~50 ms are a tie. Not `wait4`: its rusage is RUSAGE_BOTH and
-adds in every child the driver reaped. browser-tool, chromedp, puppeteer
+adds in every child the driver reaped. navigera, chromedp, puppeteer
 and playwright `wait()` on their Chrome, so `wait4` charged them Chrome's
 CPU and RSS; go-rod (its leakless helper reaps Chrome) and chromiumoxide
 were never charged. Earlier versions of this table reported exactly that
@@ -151,8 +161,8 @@ artifact ("0.82s vs 0.03s"). Browser memory is the whole browser process
 tree (every renderer/GPU/utility process), sampled as summed PSS every
 250 ms (shared pages counted once).
 
-**Reading the table.** Session wall order: bt-shell 0.32s, bt-brave 0.60s, bt-serve 0.66s, bt-edge 0.70s, gorod 0.71s, chromiumoxide 0.81s, chromey 0.98s, chromedp 1.01s, puppeteer 1.02s, playwright 1.26s. browser-tool's best
-(bt-shell) ranks #1 of 10; on regular Chrome, bt-serve (0.66s) is ahead of the fastest other driver, gorod (0.71s). All native drivers (browser-tool,
+**Reading the table.** Session wall order: bt-shell 0.32s, bt-brave 0.60s, bt-serve 0.66s, bt-edge 0.70s, gorod 0.71s, chromiumoxide 0.81s, chromey 0.98s, chromedp 1.01s, puppeteer 1.02s, playwright 1.26s. navigera's best
+(bt-shell) ranks #1 of 10; on regular Chrome, bt-serve (0.66s) is ahead of the fastest other driver, gorod (0.71s). All native drivers (navigera,
 go-rod, chromiumoxide, chromedp) spend tens of milliseconds of their own CPU
 or less; the Node drivers spend hundreds and carry 80–150 MB of their own RSS.
 
@@ -173,7 +183,7 @@ layer): cold start 0.32s → 0.11s, session 0.66s → 0.32s, browser memory 348 
 vs a DevTools WebSocket port: cold start 0.32s vs 0.32s,
 session 0.66s vs 0.65s. No speed difference: the WebSocket handshake itself is ~10 ms. The pipe is the default for two other reasons:
 it opens no TCP port that another local process could attach to, and Chrome exits when
-browser-tool dies (EOF on its command pipe), so a killed agent leaks no browser
+navigera dies (EOF on its command pipe), so a killed agent leaks no browser
 (`tests/edge_cases.rs`: over a WebSocket port the browser outlives its driver).
 Windows has no pipe transport here and uses the WebSocket, with a kill-on-close
 job object giving the same guarantee (`killed_session_server_takes_its_browser_down`
@@ -183,7 +193,7 @@ runs there too).
 built from the previous master by the ladder's `baseline_ref` A/B):
 session 0.65s → 0.66s (+1%), cold start 0.31s → 0.32s (+1%), browser CPU per session 1.19s → 1.09s. No measurable change: the new commands, dialog/popup/navigation tracking and the text snapshot cost nothing on the canonical session.
 
-Where browser-tool's cold start goes (`BT_TIMINGS`, best run): browser up
+Where navigera's cold start goes (`BT_TIMINGS`, best run): browser up
 154 ms, first page 113 ms, close 20 ms.
 
 ### Agent tools (scripted, warm session, best of 3)
@@ -194,8 +204,8 @@ persistent connection. Same canonical session plus one page snapshot.
 
 | tool | kind | total wall | mean per step | snapshot | snapshot size | gate |
 |---|---|---|---|---|---|---|
-| `browser-tool` (this repo) | CLI | 0.83s | 42 ms | 171 ms | 36 KB | ✓ |
-| `browser-tool` on chrome-headless-shell | CLI | 0.49s | 31 ms | 146 ms | 36 KB | ✓ |
+| `navigera` (this repo) | CLI | 0.83s | 42 ms | 171 ms | 36 KB | ✓ |
+| `navigera` on chrome-headless-shell | CLI | 0.49s | 31 ms | 146 ms | 36 KB | ✓ |
 | `agent-browser` 0.38 (Vercel Labs, Rust) | CLI | 1.25s | 94 ms | 185 ms | 73 KB | ✓ |
 | `playwright-cli` 0.1.22 (Microsoft) | CLI | 9.88s | 788 ms | 420 ms | 50 KB | ✓ |
 | Playwright MCP 0.0.83 (Microsoft) | MCP | 5.29s | 402 ms | 65 ms | 50 KB | ✓ |
@@ -217,7 +227,7 @@ Benchmarks time scripted steps. The agent eval asks the question that
 matters for agents: can a generic coding agent, given only the tool and its
 own documentation, finish real tasks? [`agent-eval.yml`](.github/workflows/agent-eval.yml)
 runs [Gemini CLI](https://github.com/google-gemini/gemini-cli) headless on a
-free-tier API key against the local Acme Supply site, with **browser-tool**,
+free-tier API key against the local Acme Supply site, with **navigera**,
 **playwright-cli** and **agent-browser** in turn:
 
 - **skilled:** the tool is installed and its vendor's own Agent Skill is in
@@ -236,16 +246,26 @@ jobs on Windows runners, where the agent's shell is PowerShell.
 
 The three tools run as parallel jobs. Keys live in the `main` environment,
 one slot per tool, because Gemini's free quota is per Google Cloud project:
-`GEMINI_API_KEY` (browser-tool), `GEMINI_API_KEY_2` (agent-browser) and
+`GEMINI_API_KEY` (navigera), `GEMINI_API_KEY_2` (agent-browser) and
 `GEMINI_API_KEY_3` (playwright-cli). An empty slot falls back to
 `GEMINI_API_KEY`. Without any key only the scripted baseline runs: it checks
-the site, the success checks and the harness with known-good browser-tool
+the site, the success checks and the harness with known-good navigera
 command plans. Runs that die on a model quota or outage are reported as
 **⚠ infra**, not counted as a tool failure.
 
+**0.3.0 vs 0.2.1, same model, launched together** (purchase + account, 2
+runs each, all passed): `ax` now waits for data a page is still fetching,
+and the skill teaches chaining sure steps in one shell call. Median model
+turns 18 → 10, median tokens 288K → 167K; every 0.3.0 run used fewer tokens
+than every 0.2.1 run of the same task (runs
+[37619227942](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619227942)
+vs [37619231246](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619231246)).
+The scripted session didn't slow down: 0.51 s vs 0.49 s, cold start 0.23 s
+both (bench run [37619224427](https://github.com/andrey-usa/native-cdp-cli/actions/runs/37619224427)).
+
 **Natural checks** ([`agent-check.yml`](.github/workflows/agent-check.yml),
 every master push, PRs and nightly): Gemini is told in plain words to buy
-something with browser-tool and its skill. On the local shop, once on Linux
+something with navigera and its skill. On the local shop, once on Linux
 and once on Windows through PowerShell (real checks, judged from the
 recorded order), and once on Sauce Labs' public demo
 shop [saucedemo.com](https://www.saucedemo.com), which exists for automation
@@ -264,11 +284,12 @@ history policy.
 - `src/browser.rs`: `BrowserSession`: browser discovery (incl. chrome-headless-shell), launch flags, tabs
 - `src/cdp/`: from-scratch CDP engine: pipe/WebSocket transport, JSON-RPC client (`BT_CDP_TRACE`), page ops, `ax.rs` (snapshot tree), `events.rs` (dialogs, popups, navigation), `procjob.rs` (Windows job object)
 - `src/session.rs`: named sessions: socket server (Unix socket; loopback TCP + token on Windows), client, detached `start`
+- `src/cdp/attach.rs`: `--attach` (your running browser) and `--profile` (persistent navigera browser)
 - `src/timing.rs`: `BT_TIMINGS=1` launch/close phase timings on stderr
 - `tests/`: browser e2e: serve protocol, sessions, and the Acme Supply scenario
 - `bench/site/server.py`: Acme Supply, a deterministic local shop (SPA, iframes, shadow DOM, dialogs, popups, login, upload)
 - `bench/ladder/`: driver ladder and agent-tool benchmark (`publish.json` per run, `gen_readme.py`)
-- `bench/agent-eval/`: Gemini CLI agent eval across browser-tool, playwright-cli and agent-browser
+- `bench/agent-eval/`: Gemini CLI agent eval across navigera, playwright-cli and agent-browser
 - `tools/`: `cdp_check.py` (protocol correctness), `protocol_dump.sh`, `cft_matrix.py` (Chrome version matrix)
-- `.claude/skills/browser-tool/SKILL.md`: the agent guide (compiled into the binary: `browser-tool skill`)
+- `.claude/skills/navigera/SKILL.md`: the agent guide (compiled into the binary: `navigera skill`)
 - `.github/workflows/`: `ci.yml` (tests, Chrome matrix, protocol check), `bench.yml`, `agent-eval.yml`, `release.yml`, `chrome-bisect.yml`, `vendor.yml`

@@ -465,7 +465,33 @@ impl Page {
         self.client
             .send("Page.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
             .await?;
+        // fetch/XHR tracking for `network_quiet` (best effort: an engine
+        // without the Network domain just never waits for data).
+        let _ = self
+            .client
+            .send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
+            .await;
         Ok(())
+    }
+
+    /// Wait until no fetch/XHR is in flight and none started or ended for
+    /// `quiet`, at most `max`. A single-page app usually renders what it
+    /// fetched right after the response: reading the page earlier shows
+    /// its "Loading…" placeholder. Returns at once on a page that has been
+    /// quiet (typically: the agent was thinking for seconds).
+    pub fn network_quiet(&self, quiet: Duration, max: Duration) -> bool {
+        let deadline = std::time::Instant::now() + max;
+        loop {
+            let (pending, last) = self.shared.net_state(&self.session_id);
+            let idle_for = last.map(|t| t.elapsed()).unwrap_or(Duration::MAX);
+            if pending == 0 && idle_for >= quiet {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn send(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {

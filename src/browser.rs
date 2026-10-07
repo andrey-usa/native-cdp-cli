@@ -2,7 +2,7 @@
 //!
 //! `BrowserSession` is the unit the CLI drives: one browser, a tab list with
 //! an active tab, navigation with retry, and the script/text helpers the
-//! agent needs. The wire protocol in `browser_tool.rs` is unchanged.
+//! agent needs. The wire protocol in `navigera.rs` is unchanged.
 
 use std::path::Path;
 use std::time::Duration;
@@ -180,8 +180,9 @@ fn cached_browsers(headless: bool) -> Vec<String> {
 }
 
 /// Resolve which executable to launch, honoring (in order) an explicit CLI
-/// override, `$BROWSER_TOOL_CHROMIUM` / `$CDP_CLI_CHROMIUM` /
-/// `$RUSTWRIGHT_CHROMIUM` / `$CHROME_BIN`, the common install paths, then
+/// override, `$NAVIGERA_CHROMIUM` (or the pre-0.3 `$BROWSER_TOOL_CHROMIUM`)
+/// / `$CDP_CLI_CHROMIUM` / `$RUSTWRIGHT_CHROMIUM` / `$CHROME_BIN`, the
+/// common install paths, then
 /// browsers cached by Playwright/Puppeteer.
 pub fn resolve_executable(cli_override: Option<&str>) -> Option<String> {
     resolve_executable_for(cli_override, true)
@@ -194,7 +195,7 @@ pub fn resolve_executable_for(cli_override: Option<&str>, headless: bool) -> Opt
             return Some(path.to_string());
         }
     }
-    for var in ["BROWSER_TOOL_CHROMIUM", "CDP_CLI_CHROMIUM", "RUSTWRIGHT_CHROMIUM", "CHROME_BIN"] {
+    for var in ["NAVIGERA_CHROMIUM", "BROWSER_TOOL_CHROMIUM", "CDP_CLI_CHROMIUM", "RUSTWRIGHT_CHROMIUM", "CHROME_BIN"] {
         if let Ok(path) = std::env::var(var) {
             if !path.trim().is_empty() {
                 return Some(path);
@@ -268,6 +269,16 @@ fn which_lightpanda() -> Result<String> {
     anyhow::bail!("lightpanda not on PATH")
 }
 
+/// A browser navigera connects to instead of launching its own.
+#[derive(Debug, Clone)]
+pub enum AttachTarget {
+    /// `--attach <chrome|beta|…|user-data-dir|ws://…|http://…|port>`.
+    Running(String),
+    /// `--profile <name|dir>`: the persistent navigera browser on that
+    /// profile, started when it isn't running.
+    Profile { name: String, executable: Option<String>, headless: bool },
+}
+
 /// CDP transport when none is asked for. The pipe (fds 3/4) is Unix-only
 /// here; Windows uses a DevTools WebSocket on a random localhost port, and
 /// a kill-on-close job object stands in for the pipe's "Chrome exits with
@@ -296,6 +307,9 @@ pub struct BrowserSession {
     /// for after a full navigation timeout (a page that streams forever,
     /// a hung server). Later ops don't wait on it again.
     abandoned: std::sync::Mutex<Option<(String, u64)>>,
+    /// Connected to a browser navigera doesn't own (`--attach`,
+    /// `--profile`): closing only disconnects.
+    attached: bool,
     /// Owns the tokio runtime; declared LAST so it drops last, after the
     /// browser/client/pages that use it.
     _runtime: tokio::runtime::Runtime,
@@ -393,8 +407,59 @@ impl BrowserSession {
             lightpanda,
             timeout_ms: nav_timeout_ms,
             abandoned: std::sync::Mutex::new(None),
+            attached: false,
             _runtime: runtime,
         })
+    }
+
+    /// Work in a browser that is already running (`--attach`) or in the
+    /// persistent `--profile` browser (started first if needed). The agent
+    /// gets a window of its own; closing the session only disconnects —
+    /// the browser, its profile and every window stay open.
+    pub fn attach(target: &AttachTarget, nav_timeout_ms: f64) -> Result<Self> {
+        let started = std::time::Instant::now();
+        let runtime = engine_runtime()?;
+        let handle = runtime.handle().clone();
+        let (ws_url, what) = match target {
+            AttachTarget::Running(spec) => (cdp::attach::resolve(spec)?, format!("attach {spec}")),
+            AttachTarget::Profile { name, executable, headless } => {
+                let dir = cdp::attach::profile_dir(name)?;
+                let Some(exe) = resolve_executable_for(executable.as_deref(), *headless) else {
+                    bail!("no Chrome/Chromium/Edge found for --profile — pass --chromium <path> or set $CHROME_BIN");
+                };
+                let url = cdp::attach::ensure_profile_browser(&exe, &dir, *headless)?;
+                (url, format!("profile {}", dir.display()))
+            }
+        };
+        // Chrome asks the user to Allow a connection to their own profile:
+        // give them time to click.
+        let browser = Browser::connect(&handle, &ws_url, Duration::from_secs(120))?;
+        crate::timing::log(&format!("[browser] {what}: connected to {ws_url}"));
+        crate::timing::record("browser_up", started);
+        let page = browser.new_page_in(Some("about:blank"), true)?;
+        crate::timing::record("launch_total", started);
+        Ok(Self {
+            browser,
+            pages: vec![page],
+            active: 0,
+            exe: what,
+            lightpanda: false,
+            timeout_ms: nav_timeout_ms,
+            abandoned: std::sync::Mutex::new(None),
+            attached: true,
+            _runtime: runtime,
+        })
+    }
+
+    /// True when connected to a browser navigera doesn't own.
+    pub fn is_attached(&self) -> bool {
+        self.attached
+    }
+
+    /// Ask the browser itself to shut down (`quit --close-browser` on an
+    /// attached session): Chrome closes its windows and saves its profile.
+    pub fn close_browser(&self) -> Result<()> {
+        self.browser.close_remote()
     }
 
     fn timeout(&self, override_ms: Option<f64>) -> Duration {
@@ -481,8 +546,13 @@ impl BrowserSession {
     pub fn sync_tabs(&mut self) -> Vec<usize> {
         let shared = std::sync::Arc::clone(self.browser.shared());
         let mut adopted = Vec::new();
-        for target_id in shared.take_opened() {
+        for (target_id, opener) in shared.take_opened() {
             if self.pages.iter().any(|p| p.target_id() == target_id) {
+                continue;
+            }
+            // In someone else's browser, only tabs our own tabs opened are
+            // ours; the user's popups stay theirs.
+            if self.attached && !self.pages.iter().any(|p| p.target_id() == opener) {
                 continue;
             }
             match self.browser.attach_page(&target_id) {
@@ -553,6 +623,12 @@ impl BrowserSession {
     /// one, else the navigation timeout.
     fn settle_for(&self, timeout_ms: Option<f64>) -> bool {
         self.settle_within(timeout_ms.map(|ms| Duration::from_secs_f64(ms / 1000.0)).unwrap_or_else(|| self.timeout(None)))
+    }
+
+    /// Let fetch/XHR data the active tab is loading arrive before a read
+    /// (see [`Page::network_quiet`]).
+    pub fn network_quiet(&self, quiet: Duration, max: Duration) -> bool {
+        self.active_tab().network_quiet(quiet, max)
     }
 
     /// The default navigation timeout (`--timeout-ms`).
