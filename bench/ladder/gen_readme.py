@@ -1,11 +1,12 @@
 """Regenerate README's '## Benchmarks' section from a ladder publish.json.
 
-Usage: gen_readme.py README.md publish.json   (AGENTS.md: numbers in README
-come from a run's publish.json, never retyped.)"""
+Usage: gen_readme.py README.md publish.json ["what the bt-baseline A/B changed"]
+(AGENTS.md: numbers in README come from a run's publish.json, never retyped.)"""
 import json
 import sys
 
 readme_path, pub_path = sys.argv[1], sys.argv[2]
+change_note = sys.argv[3].strip() if len(sys.argv) > 3 else ""
 doc = json.load(open(pub_path))
 all_rows = doc["contenders"]
 baseline = next((r for r in all_rows if r["name"] == "bt-baseline"), None)
@@ -77,7 +78,7 @@ date = doc["generated_utc"][:10]
 env = doc["env"].replace("**", "").replace("Env: ", "")
 lines += [
     "",
-    f"Run [{doc['run_id']}](https://github.com/andrey-usa/native-cdp-cli/actions/runs/{doc['run_id']})",
+    f"Run [{doc['run_id']}](https://github.com/andrey-usa/navigera/actions/runs/{doc['run_id']})",
     f"({date}, GitHub-hosted `ubuntu-latest`: {env}). Every driver produced",
     "byte-identical extracted data and counts (correctness gate); wall is best-of-N.",
     "GitHub runners vary between runs, so compare rows within one run.",
@@ -143,7 +144,7 @@ if shell and serve and shell.get("cold") and serve.get("cold"):
     ]
 if ws and serve and ws.get("cold") and serve.get("cold"):
     lines += [
-        "**CDP transport A/B** (same build and run): `--remote-debugging-pipe` (default)",
+        "**CDP transport A/B** (same build and run): `--remote-debugging-pipe` (default on Linux/macOS)",
         f"vs a DevTools WebSocket port: cold start {serve['cold']['wall_s']:.2f}s vs {ws['cold']['wall_s']:.2f}s,",
         f"session {serve['session']['wall_s']:.2f}s vs {ws['session']['wall_s']:.2f}s"
         + (". No speed difference"
@@ -155,6 +156,9 @@ if ws and serve and ws.get("cold") and serve.get("cold"):
         "it opens no TCP port that another local process could attach to, and Chrome exits when",
         "navigera dies (EOF on its command pipe), so a killed agent leaks no browser",
         "(`tests/edge_cases.rs`: over a WebSocket port the browser outlives its driver).",
+        "Windows has no pipe transport here and uses the WebSocket, with a kill-on-close",
+        "job object giving the same guarantee (`killed_session_server_takes_its_browser_down`",
+        "runs there too).",
         "",
     ]
 if baseline and serve:
@@ -168,10 +172,7 @@ if baseline and serve:
         f"cold start {baseline['cold']['wall_s']:.2f}s → {serve['cold']['wall_s']:.2f}s "
         f"({pct(serve['cold']['wall_s'], baseline['cold']['wall_s'])}), "
         f"browser CPU per session {baseline['session']['browser_cpu_s']:.2f}s → "
-        f"{serve['session']['browser_cpu_s']:.2f}s."
-        + (" No measurable change: the new commands, dialog/popup/navigation tracking and the"
-           " text snapshot cost nothing on the canonical session."
-           if abs(serve['session']['wall_s'] / baseline['session']['wall_s'] - 1) < 0.05 else ""),
+        f"{serve['session']['browser_cpu_s']:.2f}s." + (f" {change_note}" if change_note else ""),
         "",
     ]
     ph = (serve.get("cold") or {}).get("phases_ms") or {}
