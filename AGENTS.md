@@ -44,6 +44,7 @@ gh api repos/$R/check-runs/$JOB/annotations -q '.[] | "[\(.title)] \(.message)"'
 | `gemini smoke failure (<tool>, <key slot>)` | agent-eval.yml | why the model call failed (quota, model id, key) |
 | `agent eval key` | agent-eval.yml (each tool job) | which key slot that tool's job used |
 | `agent check <task> (<os>)` / `agent check json <task> (<os>)` | agent-check.yml | natural purchase checks (local shop on Linux and Windows, live demo shop) |
+| `agent run log (<…>) (exit N)` | agent-check.yml, agent-eval.yml | last 6 KB of the harness output when an agent run step fails (a crash before any table is written) |
 
 If something you need isn't there, add an annotation for it (see
 `bench/ladder/annotate.py`) — don't push a debug commit to find out.
@@ -204,7 +205,9 @@ If something you need isn't there, add an annotation for it (see
   Gemini CLI silently retries on the next model of its fallback chain
   (`gemini-3.8-flash`, 20 free requests a day, then a 429): runs that hit
   a quota or switched models are marked `infra` and excluded from pass
-  rates, and the smoke test fails when the model already falls back. Keep the model,
+  rates, and the smoke test fails when the model already falls back. A run
+  that times out names the command it was stuck in (`in_flight`, and
+  `stuck in: …` in its failure reasons). Keep the model,
   prompt template, settings, Chrome and site identical across tools. Each
   tool gets the skill its own vendor ships.
 - For agents, **tokens matter more than milliseconds**. An `ax` that takes

@@ -67,7 +67,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets[matrix.key] || secrets.GEMINI_API_KEY }}
         run: |
           echo "::notice title=agent check key::${{ matrix.task }} (${{ matrix.os }}) used $KEY_SLOT"
-          python bench/agent-eval/run.py --mode skilled --tools navigera --tasks "${{ matrix.task }}" \
+          bash bench/agent-eval/logged.sh "agent run log (${{ matrix.task }}, ${{ matrix.os }})" \
+            python bench/agent-eval/run.py --mode skilled --tools navigera --tasks "${{ matrix.task }}" \
             --model "$MODEL" --gemini "$GEMINI_BIN" --out out --require-pass
       - name: Result
         if: always() && env.HAS_KEY == 'true'

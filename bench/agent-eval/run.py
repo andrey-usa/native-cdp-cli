@@ -280,11 +280,15 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
     by_id = {e.get("tool_id"): e.get("parameters", {}).get("command", "") for e in events
              if e.get("type") == "tool_use" and e.get("tool_name") == "run_shell_command"}
     shell_steps = []
+    answered = set()
     for e in events:
         if e.get("type") == "tool_result" and e.get("tool_id") in by_id:
+            answered.add(e["tool_id"])
             out_text = e.get("output") or (e.get("error") or {}).get("message") or ""
             shell_steps.append({"cmd": by_id[e["tool_id"]][:200], "status": e.get("status"),
                                 "tail": out_text[-300:]})
+    # Commands that never returned: what a timed-out run was stuck in.
+    in_flight = [cmd[:300] for tid, cmd in by_id.items() if tid not in answered]
     result = next((e for e in reversed(events) if e.get("type") == "result"), {})
     stats = result.get("stats") or {}
     models = stats.get("models") or {}
@@ -303,6 +307,7 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
     return {
         "exit": proc.returncode, "timed_out": timed_out, "wall_s": round(wall, 1),
         "text": text, "shell_commands": shells, "shell_steps": shell_steps, "tools_used": tool_names,
+        "in_flight": in_flight,
         "requests": requests or None, "models": list(models) if isinstance(models, dict) else [],
         "tokens_in": stats.get("input_tokens"), "tokens_out": stats.get("output_tokens"),
         "tokens_total": stats.get("total_tokens"), "tokens_cached": stats.get("cached"),
@@ -589,10 +594,11 @@ def main() -> int:
         for task in tasks:
             for tool in tools:
                 root = Path(tempfile.mkdtemp(prefix=f"eval-{tool}-{task['id']}-"))
-                site = LiveSite(task["url"]) if task.get("live") else Site()
                 rec = {"tool": tool, "task": task["id"], "rep": rep, "mode": args.mode, "agent": args.agent,
                        "os": OS_NAME}
+                site = None
                 try:
+                    site = LiveSite(task["url"]) if task.get("live") else Site()
                     work, env = prepare(tool, args.mode, root, args)
                     spec = TOOLS[tool]
                     template = SKILLED_PROMPT if args.mode == "skilled" else ONBOARD_PROMPT
@@ -614,9 +620,11 @@ def main() -> int:
                     switched = [m for m in res.get("models") or [] if m != args.model and m not in HELPER_MODELS]
                     infra_why = (["model quota/outage (infra)"] if infra and not ok else []) + \
                                 ([f"model switched to {', '.join(switched)} (infra)"] if switched else [])
+                    stuck = ([f"stuck in: {res['in_flight'][-1][:160]}"]
+                             if res.get("timed_out") and res.get("in_flight") else [])
                     rec.update({
                         "infra": bool(infra_why),
-                        "ok": ok and not switched, "why": why + infra_why,
+                        "ok": ok and not switched, "why": why + infra_why + stuck,
                         "answer": answer[-300:],
                         "tool_commands": sum(1 for c in shells if spec["cmd"] in c),
                         "off_tool_commands": [c[:200] for c in shells if OFF_TOOL.search(c)],
@@ -625,7 +633,8 @@ def main() -> int:
                 except Exception as e:  # harness/setup problem: record, keep going
                     rec.update({"ok": False, "why": [f"harness: {e}"]})
                 finally:
-                    site.close()
+                    if site:
+                        site.close()
                     cleanup(root)
                 rec.pop("text", None)
                 runs.append(rec)
