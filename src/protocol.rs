@@ -496,7 +496,7 @@ const OPS: &[(&str, &str, &str)] = &[
     ("scroll", "[--by <px> | --to top|bottom] [<ref> | --selector <css>]", "scroll the page, or an element into view"),
     ("upload", "<ref> <file>... | --selector <css> --file <path>", "set the files of an <input type=file>"),
     ("wait", "[--selector <css>] [--text <t>] [--url <part>] [--gone <css>] [--js <expr>] [--ms <n>]", "wait until every condition holds (default up to 5 s; --timeout-ms)"),
-    ("eval", "<js>", "evaluate JS (arrow functions are called); prints the JSON result"),
+    ("eval", "<js> | --file <path.js> | -", "evaluate JS (arrow functions are called); prints the JSON result; `-` reads the script from stdin"),
     ("text", "--selector <css>", "textContent of the first match"),
     ("title", "", "page title"),
     ("url", "", "active tab state {tab, tabs, url, title}"),
@@ -985,13 +985,27 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
             },
             timeout_ms,
         },
-        "eval" | "evaluate" => Command::Eval {
-            expression: match str_flag(&mut args, "--expression")? {
-                Some(e) => e,
-                None => positional(&mut args).ok_or_else(|| need("eval", "a JS expression"))?,
-            },
-            timeout_ms,
-        },
+        "eval" | "evaluate" => {
+            // `--file <path>` and `-` (stdin) keep the script away from the
+            // shell's quoting rules (PowerShell mangles quotes and backslashes).
+            let expression = match (str_flag(&mut args, "--file")?, str_flag(&mut args, "--expression")?) {
+                (Some(path), None) => std::fs::read_to_string(&path)
+                    .map_err(|e| ArgsError::Invalid(format!("eval --file {path}: {e}")))?,
+                (None, Some(e)) => e,
+                (Some(_), Some(_)) => return invalid("eval takes --file or an expression, not both"),
+                (None, None) => match positional(&mut args) {
+                    Some(dash) if dash == "-" => {
+                        let mut script = String::new();
+                        io::Read::read_to_string(&mut io::stdin(), &mut script)
+                            .map_err(|e| ArgsError::Invalid(format!("eval -: read stdin: {e}")))?;
+                        script
+                    }
+                    Some(e) => e,
+                    None => return Err(need("eval", "a JS expression, --file <path> or - (stdin)")),
+                },
+            };
+            Command::Eval { expression: expression.trim_start_matches('\u{feff}').to_string(), timeout_ms }
+        }
         "title" => Command::Title {},
         "ax" | "snapshot" => Command::Ax {
             max_depth: num_flag(&mut args, "--max-depth")?.map(|v| v as u32),
@@ -1482,32 +1496,59 @@ pub fn normalize_url(url: &str) -> String {
 /// Returns `None` for blank lines, else the response plus whether the line
 /// was `quit` (the caller owns shutdown). Shared by stdin `serve` and the
 /// socket session server so both speak exactly the same protocol.
-pub(crate) fn handle_line(driver: &mut Driver, raw: &str) -> Option<(Response, bool)> {
+///
+/// A line holding a JSON array is a batch: each command runs in order and
+/// gets its own response line; a failure doesn't stop the rest, `quit` does.
+/// (One line per batch sidesteps shells that don't turn `\n` into newlines.)
+pub(crate) fn handle_line(driver: &mut Driver, raw: &str) -> Option<(Vec<Response>, bool)> {
+    // PowerShell 5 pipes text to native programs with a UTF-8 BOM.
+    let raw = raw.trim_start_matches('\u{feff}');
     if raw.trim().is_empty() {
         return None;
     }
-    let (id, command) = match serde_json::from_str::<Value>(raw) {
-        Ok(Value::Object(mut map)) => {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(items)) => {
+            let mut responses = Vec::with_capacity(items.len());
+            for item in items {
+                let (response, is_quit) = handle_value(driver, item);
+                responses.push(response);
+                if is_quit {
+                    return Some((responses, true));
+                }
+            }
+            Some((responses, false))
+        }
+        Ok(value) => {
+            let (response, is_quit) = handle_value(driver, value);
+            Some((vec![response], is_quit))
+        }
+        Err(_) => {
+            let mut error = "each line must be a JSON object (or an array of them)".to_string();
+            if raw.contains("}\\n{") {
+                error.push_str(
+                    "; this line has a literal \\n between commands (PowerShell's echo doesn't \
+                     turn \\n into a newline): send a JSON array on one line, or pipe a file",
+                );
+            }
+            Some((vec![err_response(Value::Null, error, Instant::now())], false))
+        }
+    }
+}
+
+fn handle_value(driver: &mut Driver, value: Value) -> (Response, bool) {
+    let (id, command) = match value {
+        Value::Object(mut map) => {
             let id = map.remove("id").unwrap_or(Value::Null);
             match serde_json::from_value::<Command>(Value::Object(map)) {
                 Ok(command) => (id, command),
-                Err(e) => {
-                    return Some((
-                        err_response(id, format!("bad command: {e}"), Instant::now()),
-                        false,
-                    ))
-                }
+                Err(e) => return (err_response(id, format!("bad command: {e}"), Instant::now()), false),
             }
         }
         _ => {
-            return Some((
-                err_response(
-                    Value::Null,
-                    "each line must be a JSON object".into(),
-                    Instant::now(),
-                ),
+            return (
+                err_response(Value::Null, "each command must be a JSON object".into(), Instant::now()),
                 false,
-            ))
+            )
         }
     };
     let started = Instant::now();
@@ -1523,7 +1564,7 @@ pub(crate) fn handle_line(driver: &mut Driver, raw: &str) -> Option<(Response, b
             r
         }
     };
-    Some((response, is_quit))
+    (response, is_quit)
 }
 
 pub(crate) fn write_response(
@@ -1675,15 +1716,17 @@ pub fn serve(
                 return ExitCode::from(1);
             }
         };
-        let Some((response, is_quit)) = handle_line(&mut driver, &raw) else {
+        let Some((responses, is_quit)) = handle_line(&mut driver, &raw) else {
             continue;
         };
         // Serve mode is a line protocol: one response == one line, always.
         // (`--pretty` would split a response across lines and desync any
         // line-reading client; it only applies to one-shot output.)
-        if let Err(e) = write_response(output, &response, false) {
-            eprintln!("[navigera] failed to write response: {e:#}");
-            return ExitCode::from(1);
+        for response in &responses {
+            if let Err(e) = write_response(output, response, false) {
+                eprintln!("[navigera] failed to write response: {e:#}");
+                return ExitCode::from(1);
+            }
         }
         if is_quit {
             driver.session().close();

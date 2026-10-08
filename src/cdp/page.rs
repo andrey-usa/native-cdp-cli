@@ -1448,6 +1448,13 @@ fn flat_ax(nodes: &[Value], all: bool) -> Value {
             if !value.is_empty() {
                 out["value"] = json!(value);
             }
+            if role == "link" {
+                if let Some(Value::String(url)) = ax::prop(n, "url") {
+                    if !url.is_empty() && !url.starts_with("javascript:") {
+                        out["url"] = json!(url);
+                    }
+                }
+            }
             Some(out)
         })
         .collect(),

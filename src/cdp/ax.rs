@@ -103,7 +103,7 @@ fn quote(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
 }
 
-fn prop<'a>(node: &'a Value, name: &str) -> Option<&'a Value> {
+pub(crate) fn prop<'a>(node: &'a Value, name: &str) -> Option<&'a Value> {
     node.get("properties")?
         .as_array()?
         .iter()
