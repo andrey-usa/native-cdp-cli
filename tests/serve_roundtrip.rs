@@ -247,6 +247,42 @@ fn navigera_serve_protocol_roundtrip() {
     let elapsed = missing["elapsed_ms"].as_f64().expect("elapsed_ms is a number");
     assert!(elapsed > 300.0 && elapsed < 3000.0, "waited ~350 ms, then failed: {missing}");
 
+    // A JSON array on one line is a batch: one response line per command,
+    // in order, and a failing command doesn't stop the rest. A leading BOM
+    // (PowerShell 5 pipes one) is ignored.
+    {
+        let bom = '\u{feff}';
+        writeln!(
+            stdin,
+            r#"{bom}[{{"id":30,"op":"title"}},{{"id":31,"op":"frobnicate"}},{{"id":32,"op":"eval","expression":"1+1"}}]"#
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let mut line = String::new();
+            stdout.read_line(&mut line).unwrap();
+            let response: Value = serde_json::from_str(line.trim()).unwrap();
+            ids.push((response["id"].as_i64().unwrap_or(-1), response["ok"].as_bool().unwrap_or(false)));
+            if response["id"] == 32 {
+                assert_eq!(response["result"], 2, "{response}");
+            }
+        }
+        assert_eq!(ids, vec![(30, true), (31, false), (32, true)]);
+    }
+
+    // PowerShell's `echo '{..}\n{..}'` sends a literal backslash-n: the
+    // error says so instead of only "must be a JSON object".
+    {
+        writeln!(stdin, r#"{{"op":"title"}}\n{{"op":"url"}}"#).unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(response["ok"], false);
+        assert!(response["error"].as_str().unwrap_or("").contains("JSON array"), "{response}");
+    }
+
     let bye = roundtrip(
         &mut stdin,
         &mut stdout,
@@ -304,7 +340,7 @@ fn navigera_named_session_across_processes() {
     let (ok, again) = run_tool(&["--session", s, "start"]);
     assert!(ok && again["result"]["already_running"] == true, "{again}");
 
-    let page = "data:text/html,<title>Session%20Test</title><a%20href='/x'>Link</a>";
+    let page = "data:text/html,<title>Session%20Test</title><a%20href='https://example.com/x'>Link</a>";
     let (ok, nav) = run_tool(&["--session", s, "goto", "--url", page]);
     assert!(ok, "goto: {nav}");
     let (ok, title) = run_tool(&["--session", s, "title"]);
@@ -318,6 +354,32 @@ fn navigera_named_session_across_processes() {
     let (ok, raw) = run_tool_raw(&["--session", s, "--raw", "title"]);
     assert!(ok && raw == "Session Test\n", "--raw prints the bare result: {raw:?}");
 
+    // The flat JSON snapshot carries link URLs too.
+    let (ok, flat) = run_tool(&["--session", s, "ax", "--format", "json"]);
+    assert!(ok, "ax json: {flat}");
+    let link = flat["result"].as_array().and_then(|nodes| nodes.iter().find(|n| n["role"] == "link"));
+    assert!(
+        link.and_then(|l| l["url"].as_str()).is_some_and(|u| u.ends_with("/x")),
+        "link has its url: {flat}"
+    );
+
+    // Scripts from a file or stdin skip the shell's quoting entirely.
+    let script = std::env::temp_dir().join(format!("nv-test-{}.js", std::process::id()));
+    std::fs::write(&script, "() => [...document.querySelectorAll('a')].map(a => a.textContent + \"\\\\\" + /\\d+/.source)").unwrap();
+    let (ok, from_file) = run_tool(&["--session", s, "eval", "--file", script.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&script);
+    assert!(ok && from_file["result"] == serde_json::json!(["Link\\\\d+"]), "eval --file: {from_file}");
+    let mut piped = Command::new(tool_exe())
+        .args(["--session", s, "eval", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run navigera eval -");
+    piped.stdin.take().unwrap().write_all(b"document.title + '!'").unwrap();
+    let out = piped.wait_with_output().unwrap();
+    let from_stdin: Value = serde_json::from_slice(&out.stdout).expect("eval - prints JSON");
+    assert_eq!(from_stdin["result"], "Session Test!", "eval -: {from_stdin}");
+
     let (ok, bye) = run_tool(&["--session", s, "quit"]);
     assert!(ok, "quit: {bye}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -327,4 +389,7 @@ fn navigera_named_session_across_processes() {
     assert!(!std::path::Path::new(s).exists(), "socket removed after quit");
     let (ok, gone) = run_tool(&["--session", s, "title"]);
     assert!(!ok && gone["ok"] == false, "no server after quit: {gone}");
+    // The error quotes the last server's log, which says how it ended.
+    assert!(gone["error"].as_str().unwrap_or("").contains("shut down"), "{gone}");
+    let _ = std::fs::remove_file(std::path::Path::new(s).with_extension("log"));
 }

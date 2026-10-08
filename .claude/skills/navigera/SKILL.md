@@ -16,7 +16,9 @@ navigera --version || curl -fsSL https://raw.githubusercontent.com/andrey-usa/na
 
 Windows (PowerShell): `irm https://raw.githubusercontent.com/andrey-usa/navigera/master/install.ps1 | iex`.
 The commands below work the same there; quote JavaScript that contains `$`
-with single quotes in PowerShell.
+with single quotes in PowerShell. JavaScript with quotes, backslashes or regex
+survives no shell's quoting reliably: save it to a file and run
+`navigera -s work eval --file extract.js` (or pipe it: `... | navigera -s work eval -`).
 
 It finds Chrome/Chromium on its own (system install, or Playwright/Puppeteer
 caches). Otherwise pass `--chromium <path>` to `start`, or set `$CHROME_BIN`.
@@ -89,6 +91,7 @@ page "Checkout — Acme" http://shop.test/checkout
   use `--limit <lines>` (default 2000).
 - To extract many items, use one `eval` that returns JSON:
   `navigera -s work --raw eval "() => [...document.querySelectorAll('.item')].map(e => e.innerText)"`
+  Links in `ax` already show their `url=`; no `eval` needed just for hrefs.
 
 ## Acting
 
@@ -104,7 +107,7 @@ page "Checkout — Acme" http://shop.test/checkout
 | `scroll [--by 800 \| --to bottom] [<ref>]` | scroll the page (infinite lists load more) or bring a ref into view |
 | `upload <ref> <file>…` | set an `<input type=file>` |
 | `wait --text "Saved" \| --selector <css> \| --url <part> \| --gone <css> \| --js "<expr>" \| --ms 500` | wait for a condition (default up to 5 s) |
-| `eval "<js>"` | run JavaScript in the page; arrow functions are called; result printed as JSON |
+| `eval "<js>"` | run JavaScript in the page; arrow functions are called; result printed as JSON. `eval --file f.js` / `eval -` (stdin) for scripts with quotes |
 | `back` / `forward` / `reload` | history |
 | `screenshot [file.png] [--full-page]` | PNG of the viewport or the whole page |
 | `tab-new [url]`, `tab-list`, `tab-select <i>`, `tab-close [<i>]` | tabs |

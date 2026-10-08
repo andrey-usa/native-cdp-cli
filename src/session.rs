@@ -223,8 +223,9 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     }
     driver.session().close();
     crate::timing::report();
-    let _ = std::fs::remove_file(&path);
+    // Log first: a client that finds the socket gone quotes this line.
     eprintln!("navigera: session {} shut down", path.display());
+    let _ = std::fs::remove_file(&path);
     ExitCode::SUCCESS
 }
 
@@ -238,10 +239,12 @@ fn serve_connection(driver: &mut Driver, stream: Stream, last: &AtomicU64) -> bo
     for line in reader.lines() {
         let Ok(raw) = line else { return false };
         last.store(now_s(), Ordering::Relaxed);
-        let Some((response, is_quit)) = protocol::handle_line(driver, &raw) else {
+        let Some((responses, is_quit)) = protocol::handle_line(driver, &raw) else {
             continue;
         };
-        let written = protocol::write_response(&mut writer, &response, false);
+        let written = responses
+            .iter()
+            .try_for_each(|response| protocol::write_response(&mut writer, response, false));
         last.store(now_s(), Ordering::Relaxed);
         if is_quit {
             return true;
@@ -283,10 +286,17 @@ pub fn client(
     let stream = match connect(&path) {
         Ok(stream) => stream,
         Err(e) => {
-            let error = format!(
+            let mut error = format!(
                 "no navigera session at {} ({e}); start one with `navigera --session {name} start`",
                 path.display()
             );
+            // A session that ran before says why it stopped (idle timeout,
+            // browser crash, quit) in its log, which outlives the socket.
+            let log_path = path.with_extension("log");
+            let tail = log_tail(&log_path, 5);
+            if !tail.is_empty() {
+                error.push_str(&format!("\nlast lines of {}:\n{tail}", log_path.display()));
+            }
             print_json(
                 output,
                 &json!({ "id": null, "ok": false, "error": error }),
@@ -388,6 +398,13 @@ fn localize_request(request: &mut Value, config: &SessionConfig) {
     }
 }
 
+/// The last `n` lines of a session log ("" when there is none).
+fn log_tail(path: &std::path::Path, n: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
 fn fail(output: &mut dyn Write, config: &SessionConfig, error: String) -> ExitCode {
     print_json(
         output,
@@ -475,16 +492,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
             return ExitCode::SUCCESS;
         }
         if let Ok(Some(status)) = child.try_wait() {
-            let tail = std::fs::read_to_string(&log_path).unwrap_or_default();
-            let tail: String = tail
-                .lines()
-                .rev()
-                .take(20)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
+            let tail = log_tail(&log_path, 20);
             return fail(
                 output,
                 config,

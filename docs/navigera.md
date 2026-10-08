@@ -62,7 +62,7 @@ Selector and text targets auto-wait (default 5 s) for the element to appear.
 | `scroll` | `--by <px>` (default 800) or `--to top\|bottom`; or a target to scroll into view (`--by` scrolls inside it) | `{scrollY, scrollHeight, viewport}` |
 | `upload` | target, file path(s) (positional or `--file`) | `{files}` |
 | `wait` | any of `--selector <css>` (visible), `--text <t>`, `--url <part>`, `--gone <css>`, `--js <expr>`, `--ms <n>`; `--timeout-ms` | state + `waited_ms` |
-| `eval` (`evaluate`) | `<js>` or `--expression` | the JSON value (an arrow function is called; promises are awaited) |
+| `eval` (`evaluate`) | `<js>`, `--expression <js>`, `--file <path.js>`, or `-` (read the script from stdin) | the JSON value (an arrow function is called; promises are awaited) |
 | `text` | `--selector <css>` | `textContent` or `null` |
 | `title` / `url` | — | string / state |
 | `back` / `forward` / `reload` | — | state |
@@ -153,7 +153,7 @@ page "Cart — Acme Supply" http://127.0.0.1:8765/cart (tab 0 of 2)
 ## Serve protocol (programs)
 
 `ax` without `format` returns the flat JSON list (`[{ref, role, name,
-value?}]`, main frame only) that serve clients have always received; send
+value?, url?}]`, `url` on links; main frame only) that serve clients have always received; send
 `"format":"text"` for the indented tree the CLI prints.
 
 ```json
@@ -173,6 +173,38 @@ Each op's fields are the long flag names in snake case: `selector`, `ref`,
 unknown ops return `ok:false` and leave the session running. EOF or `quit`
 closes the browser. The session socket speaks exactly this protocol, one
 connection at a time.
+
+A line holding a JSON **array** of commands is a batch: each runs in order
+and gets its own response line (a failure doesn't stop the rest; `quit`
+does). Use it where the shell can't send newlines: PowerShell's `echo`
+passes `\n` through literally, so `echo '{…}\n{…}' | navigera serve` is one
+bad line, while `echo '[{…},{…}]' | navigera serve` works. A leading UTF-8
+BOM (PowerShell 5 adds one) is ignored.
+
+**Driving serve from a program.** Read one response line per command line
+(a batch: one per element), match responses by `id`, and give every read a
+timeout. Read or discard stderr (`stderr=DEVNULL` in Python): a full stderr
+pipe stalls the server. Decode stdout as UTF-8 (`encoding="utf-8"` in
+Python; Windows' default code page can't decode page text). A minimal Python
+client:
+
+```python
+import json, subprocess
+nv = subprocess.Popen(["navigera", "serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+def call(op, _id=[0], **fields):
+    _id[0] += 1
+    nv.stdin.write(json.dumps({"id": _id[0], "op": op, **fields}) + "\n"); nv.stdin.flush()
+    reply = json.loads(nv.stdout.readline())
+    assert reply["id"] == _id[0], reply
+    return reply
+call("goto", url="https://example.com")
+print(call("ax", format="text")["result"])
+call("quit"); nv.wait()
+```
+
+An agent working from a shell needs none of this: use a session
+(`navigera -s work start`, then one command per call).
 
 ## Browsers and engines
 
@@ -196,7 +228,13 @@ connection at a time.
   the server listens on that loopback port and drops any client whose first
   line isn't the token (a web page posting to localhost can't drive it).
   `start` detaches the server from the console, the caller's job and its
-  stdio handles, so the shell that ran `start` returns at once.
+  stdio handles, so the shell that ran `start` returns at once. It returns
+  once the browser is up (no need to sleep after it); the first Chrome
+  launch on a fresh Windows machine takes 4–6 s, later ones under 1 s.
+- **A session that stopped.** A client call to a session that isn't running
+  quotes the end of its server's log (`<socket>.log`, kept after the server
+  exits), which says why it stopped: `idle for 1800s`, a browser crash, or
+  `quit`.
 - **`--engine lightpanda`** (experimental) starts `lightpanda serve`. The
   binary comes from `$LIGHTPANDA_BIN` or `PATH`, or from `--chromium`. It
   supports a single tab and fires no load events, so `goto` waits for commit.
