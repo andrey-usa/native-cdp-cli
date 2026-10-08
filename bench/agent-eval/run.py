@@ -312,8 +312,15 @@ def run_gemini(prompt: str, work: Path, env: dict, args) -> dict:
         "tokens_in": stats.get("input_tokens"), "tokens_out": stats.get("output_tokens"),
         "tokens_total": stats.get("total_tokens"), "tokens_cached": stats.get("cached"),
         "tool_calls": stats.get("tool_calls"),
-        "errors": errors[-3:], "stderr_tail": err[-1500:] if proc.returncode else "",
+        "errors": errors[-3:], "stderr_tail": stderr_tail(err) if proc.returncode else "",
     }
+
+
+def stderr_tail(err: str, limit: int = 1500) -> str:
+    """The end of Gemini CLI's stderr without JS stack frames: a 1500-char
+    tail of a raw stack trace is all `at …` lines and no error message."""
+    lines = [l for l in err.splitlines() if not re.match(r"\s+at ", l)]
+    return "\n".join(lines)[-limit:]
 
 
 def scripted_plan(task: str, base: str) -> list[list[str]]:
@@ -612,7 +619,10 @@ def main() -> int:
                     rec.update(res)
                     # Model quota or outage, not the tool: reported apart and
                     # left out of pass rates.
-                    infra = re.search(r"Quota exceeded|RESOURCE_EXHAUSTED|status: (429|503)|\b503\b.*UNAVAILABLE",
+                    # "failed sending request" / "fetch failed" / ECONN*: the
+                    # model API call itself never got through.
+                    infra = re.search(r"Quota exceeded|RESOURCE_EXHAUSTED|status: (429|503)|\b503\b.*UNAVAILABLE"
+                                      r"|failed sending request|fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN",
                                       (res.get("stderr_tail") or "") + " ".join(res.get("errors") or []))
                     # On a quota error Gemini CLI silently retries on the next
                     # model of its fallback chain: such a run no longer
