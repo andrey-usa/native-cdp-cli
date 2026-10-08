@@ -49,6 +49,25 @@ navigera -s work quit                     # done
   session. `-s <name>` is short for `--session <name>`. `$NAVIGERA_SESSION`
   sets a default session. An idle session shuts down after 30 min.
 
+## Shell commands, not a wrapper script
+
+Drive the session with one shell command per step. Do not write a
+Python/Node wrapper around `navigera serve`: a direct call costs ~3 ms more
+than a pipe, while writing and debugging a wrapper costs model turns, and a
+script that starts its own `serve` relaunches the browser (and loses its
+cookies) on every run.
+
+| you need | use |
+|---|---|
+| a step whose next move depends on the page | one command, then `ax` |
+| several steps you are sure of | `&&`-chain them, end with `ax` |
+| data from many elements on one page | one `eval` returning JSON (`--file x.js` if it has quotes) |
+| the same few commands over a list (URLs, pages) | a shell loop over session commands |
+| hundreds of steps with no decision in between, from a program you are already writing | `navigera serve`: JSON lines on stdin (docs/navigera.md, "Serve protocol") |
+
+If a command fails, read its error and fix the command; a wrapper hides
+the error and doesn't fix it.
+
 ## The user's own browser (their logins and settings)
 
 ```bash
@@ -147,7 +166,7 @@ Element commands wait up to 5 s for the element to appear. Pass
 | `ref N not found (stale …)` | take a fresh `ax` |
 | `timed out … waiting for load` | the page has a slow resource: `goto <url> --wait domcontentloaded`, then `wait --text …` |
 | `select: element is … not a <select>` | custom dropdown: `click` it, `ax`, then click the option by ref |
-| `no navigera session at …` | run `navigera -s <name> start` first |
+| `no navigera session at …` | run `navigera -s <name> start`; the error quotes why the last one stopped (idle 30 min, crash) |
 | text you expect is missing from `ax` | it may be collapsed (`<details>`, accordion, tab) or appear after scrolling: expand it or `scroll`, then `ax` again |
 
 ## More
