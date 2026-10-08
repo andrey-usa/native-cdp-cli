@@ -204,7 +204,12 @@ call("quit"); nv.wait()
 ```
 
 An agent working from a shell needs none of this: use a session
-(`navigera -s work start`, then one command per call).
+(`navigera -s work start`, then one command per call). Per call, a direct
+session command costs about 3 ms more than a line on a `serve` pipe (Linux,
+warm session: `title` 3.3 vs 0.5 ms, `ax` 14.7 vs 11.1 ms), far less than one
+model turn. A wrapper pays off only for long runs with no decision between
+steps, written by a program that already exists; a script that launches its
+own `serve` pays a browser cold start and loses cookies on every run.
 
 ## Browsers and engines
 
