@@ -507,9 +507,12 @@ fn ax_waits_for_fetched_content() {
     let tree = r["result"].as_str().unwrap_or_default().to_string();
     assert!(tree.contains("Loaded 3 items"), "ax read the placeholder: {tree}");
     assert!(took < Duration::from_secs(4), "bounded wait: {took:?}");
-    // A quiet page is read at once.
-    let (_, again) = s.run(&["ax"]);
-    assert!(again < Duration::from_millis(400), "no wait on a quiet page: {again:?}");
+    // A quiet page is read at once (the 500 ms quiet window is not waited
+    // out again). Timed on the server: the client's own spawn and connect
+    // vary too much between runners to say anything about the wait.
+    let (r, _) = s.run(&["ax"]);
+    let elapsed_ms = r["elapsed_ms"].as_f64().expect("elapsed_ms in the response");
+    assert!(elapsed_ms < 400.0, "no wait on a quiet page: {elapsed_ms} ms");
 }
 
 /// A tab brought back to the front takes clicks at once. CI caught the
