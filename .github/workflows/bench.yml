@@ -45,7 +45,7 @@ jobs:
     env:
       REPS: ${{ inputs.reps }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -61,12 +61,12 @@ jobs:
             bench/ladder/contenders/chromey -> target
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.24"
 
@@ -201,7 +201,7 @@ jobs:
           python3 bench/ladder/annotate.py /tmp/ladder-tail.log "ladder log tail"
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ladder-results
           path: bench/ladder/out/
