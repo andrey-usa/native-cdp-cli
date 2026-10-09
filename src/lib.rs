@@ -5,8 +5,8 @@
 //! runtime, JSON-lines protocol with `serve` mode and one-shot subcommands.
 
 pub mod browser;
-pub mod protocol;
-pub mod timing;
-pub mod proc;
-pub mod session;
 pub mod cdp;
+pub mod proc;
+pub mod protocol;
+pub mod session;
+pub mod timing;

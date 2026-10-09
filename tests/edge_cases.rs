@@ -15,7 +15,11 @@ fn tool_exe() -> String {
 
 /// The fixture servers are Python; Windows installs it as `python`.
 fn python() -> &'static str {
-    if cfg!(windows) { "python" } else { "python3" }
+    if cfg!(windows) {
+        "python"
+    } else {
+        "python3"
+    }
 }
 
 /// Same resolver as the tool; `NAVIGERA_REQUIRE_BROWSER=1` (CI) forbids skipping.
@@ -65,10 +69,8 @@ struct Session {
 
 impl Session {
     fn start(test: &str) -> Session {
-        let name = std::env::temp_dir()
-            .join(format!("nv-edge-{test}-{}.sock", std::process::id()))
-            .display()
-            .to_string();
+        let name =
+            std::env::temp_dir().join(format!("nv-edge-{test}-{}.sock", std::process::id())).display().to_string();
         let s = Session { name };
         s.ok(&["start", "--idle-timeout-s", "120"]);
         s
@@ -86,7 +88,10 @@ impl Session {
         let took = started.elapsed();
         let text = String::from_utf8_lossy(&out.stdout);
         let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| {
-            panic!("stdout must be one JSON object for {args:?}: {text}\nstderr: {}", String::from_utf8_lossy(&out.stderr))
+            panic!(
+                "stdout must be one JSON object for {args:?}: {text}\nstderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
         });
         (value, took)
     }
@@ -108,10 +113,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = Command::new(tool_exe())
-            .args(["--session", &self.name, "quit"])
-            .stdin(Stdio::null())
-            .output();
+        let _ = Command::new(tool_exe()).args(["--session", &self.name, "quit"]).stdin(Stdio::null()).output();
     }
 }
 
@@ -452,10 +454,7 @@ fn killed_session_server_takes_its_browser_down() {
         return;
     }
     let s = Session {
-        name: std::env::temp_dir()
-            .join(format!("nv-edge-orphan-{}.sock", std::process::id()))
-            .display()
-            .to_string(),
+        name: std::env::temp_dir().join(format!("nv-edge-orphan-{}.sock", std::process::id())).display().to_string(),
     };
     let started = s.ok(&["start", "--idle-timeout-s", "120"]);
     let server = started["pid"].as_u64().expect("start reports the server pid");
@@ -533,7 +532,11 @@ fn click_right_after_switching_tabs_lands() {
         s.ok(&["tab-select", "0"]);
         s.ok(&["tab-close", "1"]);
         s.ok(&["click", "--text", "Next page"]);
-        assert_eq!(s.text("document.getElementById('n').textContent"), "1", "round {i}: the click never reached the page");
+        assert_eq!(
+            s.text("document.getElementById('n').textContent"),
+            "1",
+            "round {i}: the click never reached the page"
+        );
     }
     let _ = std::fs::remove_file(shot);
 }

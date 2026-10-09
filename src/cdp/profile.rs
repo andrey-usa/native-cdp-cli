@@ -192,8 +192,7 @@ fn group_running(pgid: u32) -> bool {
         let name = p.file_name();
         let name = name.to_string_lossy();
         name.bytes().all(|b| b.is_ascii_digit())
-            && stat_fields(&name)
-                .is_some_and(|f| live_state(&f) && f.split_whitespace().nth(2) == Some(pgid.as_str()))
+            && stat_fields(&name).is_some_and(|f| live_state(&f) && f.split_whitespace().nth(2) == Some(pgid.as_str()))
     })
 }
 

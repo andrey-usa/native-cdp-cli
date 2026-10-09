@@ -31,10 +31,8 @@ pub fn report() {
         return;
     }
     let Ok(phases) = PHASES.lock() else { return };
-    let map: serde_json::Map<String, serde_json::Value> = phases
-        .iter()
-        .map(|(name, ms)| (name.to_string(), serde_json::json!((ms * 1000.0).round() / 1000.0)))
-        .collect();
+    let map: serde_json::Map<String, serde_json::Value> =
+        phases.iter().map(|(name, ms)| (name.to_string(), serde_json::json!((ms * 1000.0).round() / 1000.0))).collect();
     eprintln!("NAVIGERA_TIMINGS {}", serde_json::Value::Object(map));
 }
 

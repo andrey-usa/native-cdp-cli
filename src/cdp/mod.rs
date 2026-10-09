@@ -14,8 +14,8 @@
 //! `client` multiplexes JSON-RPC over the websocket, `browser` owns the
 //! browser-level connection, `page` implements the tab-level operations.
 
-pub mod ax;
 pub mod attach;
+pub mod ax;
 mod browser;
 mod client;
 mod events;

@@ -314,8 +314,17 @@ fn key_info(name: &str) -> Option<(String, String, u32, Option<String>)> {
         ("Alt", "AltLeft", 18, None),
         ("Meta", "MetaLeft", 91, None),
     ];
-    let aliases = [("Esc", "Escape"), ("Return", "Enter"), ("Up", "ArrowUp"), ("Down", "ArrowDown"),
-        ("Left", "ArrowLeft"), ("Right", "ArrowRight"), ("Ctrl", "Control"), ("Cmd", "Meta"), (" ", "Space")];
+    let aliases = [
+        ("Esc", "Escape"),
+        ("Return", "Enter"),
+        ("Up", "ArrowUp"),
+        ("Down", "ArrowDown"),
+        ("Left", "ArrowLeft"),
+        ("Right", "ArrowRight"),
+        ("Ctrl", "Control"),
+        ("Cmd", "Meta"),
+        (" ", "Space"),
+    ];
     let name = aliases.iter().find(|(a, _)| a.eq_ignore_ascii_case(name)).map(|(_, k)| *k).unwrap_or(name);
     if let Some((key, code, vk, text)) = named.iter().find(|(k, ..)| k.eq_ignore_ascii_case(name)) {
         let key = if *key == "Space" { " " } else { key };
@@ -391,27 +400,13 @@ fn exception_message(details: &Value) -> String {
         .and_then(|e| e.get("description").or_else(|| e.get("value")))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            details
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("exception")
-                .to_string()
-        });
-    description
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("at "))
-        .take(4)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .unwrap_or_else(|| details.get("text").and_then(Value::as_str).unwrap_or("exception").to_string());
+    description.lines().filter(|l| !l.trim_start().starts_with("at ")).take(4).collect::<Vec<_>>().join("\n")
 }
 
 /// `node[key].value` as a string ("" when absent).
 fn ax_str<'a>(node: &'a Value, key: &str) -> &'a str {
-    node.get(key)
-        .and_then(|v| v.get("value"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
+    node.get(key).and_then(|v| v.get("value")).and_then(Value::as_str).unwrap_or("")
 }
 
 /// `ax` options passed down from the protocol.
@@ -444,13 +439,7 @@ impl Page {
         target_id: String,
         shared: Arc<Shared>,
     ) -> Self {
-        Self {
-            handle,
-            client,
-            session_id,
-            target_id,
-            shared,
-        }
+        Self { handle, client, session_id, target_id, shared }
     }
 
     pub fn target_id(&self) -> &str {
@@ -470,17 +459,12 @@ impl Page {
     /// trip per tab plus a stream of events, and it is the best-known
     /// automation fingerprint anti-bot scripts probe for.
     pub async fn enable(&self) -> Result<()> {
-        self.client
-            .send("Page.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
-            .await?;
+        self.client.send("Page.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT).await?;
         // fetch/XHR tracking for `network_quiet` (best effort: an engine
         // without the Network domain just never waits for data).
         // `NAVIGERA_NO_NETWORK=1` (diagnostic) leaves the Network domain off.
         if std::env::var_os("NAVIGERA_NO_NETWORK").is_none() {
-            let _ = self
-                .client
-                .send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT)
-                .await;
+            let _ = self.client.send("Network.enable", json!({}), Some(&self.session_id), CMD_TIMEOUT).await;
         }
         Ok(())
     }
@@ -525,12 +509,7 @@ impl Page {
     }
 
     fn send(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
-        self.block_on(self.client.send(
-            method,
-            params,
-            Some(&self.session_id),
-            timeout,
-        ))
+        self.block_on(self.client.send(method, params, Some(&self.session_id), timeout))
     }
 
     /// Evaluate a JS expression; the result comes back by value in one round
@@ -560,11 +539,7 @@ impl Page {
             bail!("{}", exception_message(details));
         }
         // returnByValue => result.result.value holds the JSON value.
-        Ok(res
-            .get("result")
-            .and_then(|r| r.get("value"))
-            .cloned()
-            .unwrap_or(Value::Null))
+        Ok(res.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
     }
 
     /// Navigate the main frame. `wait` is `load` (default), `domcontentloaded`
@@ -670,11 +645,7 @@ impl Page {
     pub fn history(&self, delta: i64, timeout: Duration) -> Result<()> {
         let history = self.send("Page.getNavigationHistory", json!({}), timeout)?;
         let index = history.get("currentIndex").and_then(Value::as_i64).unwrap_or(0) + delta;
-        let entries = history
-            .get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let entries = history.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
         let Some(entry) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
             bail!("no {} history entry", if delta < 0 { "previous" } else { "next" });
         };
@@ -682,19 +653,12 @@ impl Page {
         self.block_on(async {
             let mut events = self.client.subscribe();
             self.client
-                .send(
-                    "Page.navigateToHistoryEntry",
-                    json!({ "entryId": id }),
-                    Some(&self.session_id),
-                    timeout,
-                )
+                .send("Page.navigateToHistoryEntry", json!({ "entryId": id }), Some(&self.session_id), timeout)
                 .await?;
             // Committed (cross-document, back/forward cache) or a
             // same-document history step: either way the URL has changed.
             self.wait_event(&mut events, timeout, |method, params| match method {
-                "Page.frameNavigated" => params
-                    .get("frame")
-                    .is_some_and(|f| f.get("parentId").is_none()),
+                "Page.frameNavigated" => params.get("frame").is_some_and(|f| f.get("parentId").is_none()),
                 "Page.navigatedWithinDocument" => true,
                 _ => false,
             })
@@ -706,14 +670,10 @@ impl Page {
     pub fn reload(&self, timeout: Duration) -> Result<()> {
         self.block_on(async {
             let mut events = self.client.subscribe();
-            self.client
-                .send("Page.reload", json!({}), Some(&self.session_id), timeout)
-                .await?;
+            self.client.send("Page.reload", json!({}), Some(&self.session_id), timeout).await?;
             let mut committed = false;
             self.wait_event(&mut events, timeout, |method, params| {
-                if method == "Page.frameNavigated"
-                    && params.get("frame").is_some_and(|f| f.get("parentId").is_none())
-                {
+                if method == "Page.frameNavigated" && params.get("frame").is_some_and(|f| f.get("parentId").is_none()) {
                     committed = true;
                 }
                 committed && method == "Page.loadEventFired"
@@ -731,9 +691,7 @@ impl Page {
             let state = self.shared.nav_state(&self.session_id);
             // A request that never starts loading (cancelled, 204, download)
             // stops counting after 2 s.
-            let pending = state
-                .requested_at
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+            let pending = state.requested_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
             if !pending && (!state.loading || state.dom_ready) {
                 return Ok(());
             }
@@ -777,8 +735,7 @@ impl Page {
     /// parsed (before DOMContentLoaded).
     pub fn is_loading(&self) -> bool {
         let state = self.shared.nav_state(&self.session_id);
-        state.requested_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2))
-            || (state.loading && !state.dom_ready)
+        state.requested_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) || (state.loading && !state.dom_ready)
     }
 
     pub fn title(&self, timeout: Duration) -> Result<String> {
@@ -804,11 +761,7 @@ impl Page {
         timeout: Duration,
     ) -> Result<Value> {
         let arg_list: Vec<String> = args.iter().map(Value::to_string).collect();
-        let extra = if arg_list.is_empty() {
-            String::new()
-        } else {
-            format!(", {}", arg_list.join(", "))
-        };
+        let extra = if arg_list.is_empty() { String::new() } else { format!(", {}", arg_list.join(", ")) };
         let wait_ms = wait_budget_ms(wait.min(timeout));
         let finder = match target {
             Target::Selector(sel) => format!("({WAIT_FOR})({}, {wait_ms}, {})", json!(sel), json!(what)),
@@ -889,18 +842,8 @@ impl Page {
             if let Some(details) = res.get("exceptionDetails") {
                 bail!("{}", exception_message(details));
             }
-            let object = res
-                .get("result")
-                .and_then(|r| r.get("objectId"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            Ok((
-                res.get("result")
-                    .and_then(|r| r.get("value"))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                object,
-            ))
+            let object = res.get("result").and_then(|r| r.get("objectId")).and_then(Value::as_str).map(str::to_string);
+            Ok((res.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null), object))
         })
     }
 
@@ -962,17 +905,11 @@ impl Page {
         let deadline = std::time::Instant::now() + Duration::from_millis(300);
         loop {
             let seen = self
-                .send(
-                    "Runtime.evaluate",
-                    json!({ "expression": "window.__nvSeen", "returnByValue": true }),
-                    timeout,
-                )
+                .send("Runtime.evaluate", json!({ "expression": "window.__nvSeen", "returnByValue": true }), timeout)
                 .ok()
                 .map(|r| r.pointer("/result/value").and_then(Value::as_u64));
             match seen {
-                Some(Some(0)) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
+                Some(Some(0)) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
                 Some(Some(0)) => return false,
                 _ => return true,
             }
@@ -982,17 +919,9 @@ impl Page {
     /// Centre of a node's first content quad, in top-level viewport
     /// coordinates (works inside cross-origin iframes).
     fn content_quad_center(&self, backend_node_id: u64, timeout: Duration) -> Option<(f64, f64)> {
-        let res = self
-            .send("DOM.getContentQuads", json!({ "backendNodeId": backend_node_id }), timeout)
-            .ok()?;
-        let quad: Vec<f64> = res
-            .get("quads")?
-            .as_array()?
-            .first()?
-            .as_array()?
-            .iter()
-            .filter_map(Value::as_f64)
-            .collect();
+        let res = self.send("DOM.getContentQuads", json!({ "backendNodeId": backend_node_id }), timeout).ok()?;
+        let quad: Vec<f64> =
+            res.get("quads")?.as_array()?.first()?.as_array()?.iter().filter_map(Value::as_f64).collect();
         if quad.len() != 8 {
             return None;
         }
@@ -1007,19 +936,14 @@ impl Page {
     /// failure after the press is an error. No-op (Ok(true)) when the page
     /// already used DOM events.
     fn mouse_click(&self, point: &Value, timeout: Duration) -> Result<bool> {
-        let (Some(x), Some(y)) = (
-            point.get("x").and_then(Value::as_f64),
-            point.get("y").and_then(Value::as_f64),
-        ) else {
+        let (Some(x), Some(y)) = (point.get("x").and_then(Value::as_f64), point.get("y").and_then(Value::as_f64))
+        else {
             return Ok(true);
         };
-        for (i, (kind, button, buttons)) in [
-            ("mouseMoved", "none", 0),
-            ("mousePressed", "left", 1),
-            ("mouseReleased", "left", 0),
-        ]
-        .into_iter()
-        .enumerate()
+        for (i, (kind, button, buttons)) in
+            [("mouseMoved", "none", 0), ("mousePressed", "left", 1), ("mouseReleased", "left", 0)]
+                .into_iter()
+                .enumerate()
         {
             let sent = self.send(
                 "Input.dispatchMouseEvent",
@@ -1053,10 +977,7 @@ impl Page {
                 None => bail!("hover: element is inside a cross-origin iframe; target it by ref from `ax`"),
             }
         }
-        if let (Some(x), Some(y)) = (
-            point.get("x").and_then(Value::as_f64),
-            point.get("y").and_then(Value::as_f64),
-        ) {
+        if let (Some(x), Some(y)) = (point.get("x").and_then(Value::as_f64), point.get("y").and_then(Value::as_f64)) {
             self.send(
                 "Input.dispatchMouseEvent",
                 json!({ "type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0 }),
@@ -1084,13 +1005,22 @@ impl Page {
     }
 
     /// Scroll: an element into view (or inside it by `dy`), else the window.
-    pub fn scroll(&self, target: Option<&Target>, dy: Option<f64>, to: Option<&str>, wait: Duration, timeout: Duration) -> Result<Value> {
+    pub fn scroll(
+        &self,
+        target: Option<&Target>,
+        dy: Option<f64>,
+        to: Option<&str>,
+        wait: Duration,
+        timeout: Duration,
+    ) -> Result<Value> {
         if let Some(target) = target {
             return self.on_element(target, "scroll", SCROLL_EL, &[json!(dy.unwrap_or(0.0))], wait, timeout);
         }
         let action = match to {
             Some("top") => "window.scrollTo({ top: 0, behavior: 'instant' })".to_string(),
-            Some("bottom") => "window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })".to_string(),
+            Some("bottom") => {
+                "window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })".to_string()
+            }
             Some(other) => bail!("scroll --to takes top|bottom, got {other:?}"),
             None => format!("window.scrollBy({{ top: {}, behavior: 'instant' }})", dy.unwrap_or(800.0)),
         };
@@ -1112,12 +1042,8 @@ impl Page {
         let enter = matches!(chord.to_ascii_lowercase().as_str(), "enter" | "return");
         // Enter navigates only from a form control, a link or a button.
         // (Cross-origin frames hide their focus: assume it might.)
-        let may_navigate = enter
-            && self
-                .evaluate_raw(ENTER_MAY_NAVIGATE, timeout)
-                .ok()
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+        let may_navigate =
+            enter && self.evaluate_raw(ENTER_MAY_NAVIGATE, timeout).ok().and_then(|v| v.as_bool()).unwrap_or(true);
         let parts: Vec<&str> = chord.split('+').filter(|p| !p.is_empty()).collect();
         let parts = if chord.ends_with("++") || chord == "+" {
             let mut p = parts;
@@ -1131,10 +1057,12 @@ impl Page {
         };
         let mut modifiers = 0;
         for m in mods {
-            modifiers |= modifier_bit(m).ok_or_else(|| anyhow::anyhow!("press: unknown modifier {m:?} (use Control, Shift, Alt, Meta)"))?;
+            modifiers |= modifier_bit(m)
+                .ok_or_else(|| anyhow::anyhow!("press: unknown modifier {m:?} (use Control, Shift, Alt, Meta)"))?;
         }
-        let (key, code, vk, text) = key_info(last)
-            .ok_or_else(|| anyhow::anyhow!("press: unknown key {last:?} (use Enter, Tab, Escape, ArrowDown, a single character, …)"))?;
+        let (key, code, vk, text) = key_info(last).ok_or_else(|| {
+            anyhow::anyhow!("press: unknown key {last:?} (use Enter, Tab, Escape, ArrowDown, a single character, …)")
+        })?;
         // Shift on a single character types its shifted form (US layout):
         // Shift+a is "A", Shift+1 is "!".
         let (key, text) = match (&text, modifiers & 8 != 0) {
@@ -1206,7 +1134,9 @@ impl Page {
             _ => {
                 // Find the element (auto-wait), keep it as a remote object.
                 let finder = match target {
-                    Target::Selector(sel) => format!("({WAIT_FOR})({}, {}, 'upload')", json!(sel), wait_budget_ms(wait)),
+                    Target::Selector(sel) => {
+                        format!("({WAIT_FOR})({}, {}, 'upload')", json!(sel), wait_budget_ms(wait))
+                    }
                     Target::Text(t) => format!("({WAIT_TEXT})({}, {}, 'upload')", json!(t), wait_budget_ms(wait)),
                     Target::Ref(_) => unreachable!(),
                 };
@@ -1236,10 +1166,8 @@ impl Page {
     /// First matching element's textContent, if present.
     pub fn text_content(&self, selector: &str, timeout: Duration) -> Result<Option<String>> {
         let sel = serde_json::to_string(selector)?;
-        let value = self.evaluate_raw(
-            &format!("(document.querySelector({sel}) || {{}}).textContent ?? null"),
-            timeout,
-        )?;
+        let value =
+            self.evaluate_raw(&format!("(document.querySelector({sel}) || {{}}).textContent ?? null"), timeout)?;
         Ok(value.as_str().map(str::to_string))
     }
 
@@ -1255,13 +1183,9 @@ impl Page {
             params["captureBeyondViewport"] = Value::Bool(true);
         }
         let res = self.send("Page.captureScreenshot", params, timeout)?;
-        let data = res
-            .get("data")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("captureScreenshot: no data"))?;
-        base64::engine::general_purpose::STANDARD
-            .decode(data)
-            .context("screenshot base64 decode")
+        let data =
+            res.get("data").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("captureScreenshot: no data"))?;
+        base64::engine::general_purpose::STANDARD.decode(data).context("screenshot base64 decode")
     }
 
     /// Child frames' AX trees, each keyed by its owner `<iframe>` node.
@@ -1339,11 +1263,7 @@ impl Page {
             params["depth"] = json!(d);
         }
         let res = self.send("Accessibility.getFullAXTree", params, timeout)?;
-        let nodes = res
-            .get("nodes")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let nodes = res.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
         if opts.json {
             return Ok(flat_ax(&nodes, opts.all));
         }
@@ -1352,9 +1272,7 @@ impl Page {
         let title = root.map(|n| ax_str(n, "name").to_string()).unwrap_or_default();
         let url = root
             .and_then(|n| n.get("properties").and_then(Value::as_array))
-            .and_then(|props| {
-                props.iter().find(|p| p.get("name").and_then(Value::as_str) == Some("url"))
-            })
+            .and_then(|props| props.iter().find(|p| p.get("name").and_then(Value::as_str) == Some("url")))
             .and_then(|p| p.get("value").and_then(|v| v.get("value")).and_then(Value::as_str))
             .unwrap_or_default()
             .to_string();
@@ -1370,12 +1288,7 @@ impl Page {
             &format!("page {} {url}", serde_json::to_string(&title).unwrap_or_default()),
             &nodes,
             &frames,
-            &ax::Options {
-                all_refs: opts.all_refs,
-                limit: opts.limit,
-                root_backend_id,
-                origin,
-            },
+            &ax::Options { all_refs: opts.all_refs, limit: opts.limit, root_backend_id, origin },
         );
         Ok(Value::String(rendered.text))
     }
@@ -1384,14 +1297,7 @@ impl Page {
     pub fn close_target(&self, timeout: Duration) -> Result<()> {
         self.shared.unregister(&self.session_id);
         self.block_on(async {
-            self.client
-                .send(
-                    "Target.closeTarget",
-                    json!({ "targetId": self.target_id }),
-                    None,
-                    timeout,
-                )
-                .await?;
+            self.client.send("Target.closeTarget", json!({ "targetId": self.target_id }), None, timeout).await?;
             Ok(())
         })
     }
@@ -1405,9 +1311,7 @@ const AX_STRUCTURAL: &[&str] = &["generic", "none", "presentation", "InlineTextB
 
 /// The older flat JSON snapshot (`ax --format json`).
 fn flat_ax(nodes: &[Value], all: bool) -> Value {
-    let live = nodes
-        .iter()
-        .filter(|n| !n.get("ignored").and_then(Value::as_bool).unwrap_or(false));
+    let live = nodes.iter().filter(|n| !n.get("ignored").and_then(Value::as_bool).unwrap_or(false));
     if all {
         return Value::Array(
             live.map(|n| {
@@ -1421,10 +1325,8 @@ fn flat_ax(nodes: &[Value], all: bool) -> Value {
             .collect(),
         );
     }
-    let names: std::collections::HashMap<&str, &str> = nodes
-        .iter()
-        .filter_map(|n| Some((n.get("nodeId")?.as_str()?, ax_str(n, "name"))))
-        .collect();
+    let names: std::collections::HashMap<&str, &str> =
+        nodes.iter().filter_map(|n| Some((n.get("nodeId")?.as_str()?, ax_str(n, "name")))).collect();
     Value::Array(
         live.filter_map(|n| {
             let role = ax_str(n, "role");
@@ -1434,11 +1336,8 @@ fn flat_ax(nodes: &[Value], all: bool) -> Value {
                 if name.is_empty() || AX_STRUCTURAL.contains(&role) {
                     return None;
                 }
-                let parent_name = n
-                    .get("parentId")
-                    .and_then(Value::as_str)
-                    .and_then(|p| names.get(p).copied())
-                    .unwrap_or("");
+                let parent_name =
+                    n.get("parentId").and_then(Value::as_str).and_then(|p| names.get(p).copied()).unwrap_or("");
                 if role == "StaticText" && name == parent_name {
                     return None;
                 }

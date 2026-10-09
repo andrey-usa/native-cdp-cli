@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use std::sync::Arc;
 
@@ -126,9 +126,7 @@ impl Browser {
             }
         };
         crate::timing::log(&format!("[browser] lightpanda serve on 127.0.0.1:{port} -> {ws_url}"));
-        let client = handle
-            .block_on(CdpClient::connect(&ws_url))
-            .context("CDP connect to lightpanda")?;
+        let client = handle.block_on(CdpClient::connect(&ws_url)).context("CDP connect to lightpanda")?;
         let shared = Arc::new(Shared::default());
         events::spawn(handle, &client, Arc::clone(&shared));
         Ok(Self {
@@ -149,30 +147,25 @@ impl Browser {
         let started = std::time::Instant::now();
         #[cfg(unix)]
         if opts.pipe && opts.debugging_port.is_none() {
-            let launched = transport::launch_chrome_pipe(&opts.exe, opts.headless, &opts.chrome_flags)
-                .context("launch chrome")?;
+            let launched =
+                transport::launch_chrome_pipe(&opts.exe, opts.headless, &opts.chrome_flags).context("launch chrome")?;
             crate::timing::record("spawn", started);
             let client = {
                 let _guard = handle.enter();
                 handle.block_on(CdpClient::connect_pipe(launched.from_browser, launched.to_browser))
             }
             .context("CDP pipe connect")?;
-            let mut browser = Self::finish(handle, client, Some(launched.child), Some(launched.profile_dir), "pipe".into());
+            let mut browser =
+                Self::finish(handle, client, Some(launched.child), Some(launched.profile_dir), "pipe".into());
             browser.stderr = Some(launched.stderr);
             return Ok(browser);
         }
-        let LaunchedChrome {
-            child,
-            profile_dir,
-            ws_url,
-            job,
-        } = transport::launch_chrome(&opts.exe, opts.headless, &opts.chrome_flags, opts.debugging_port)
-            .context("launch chrome")?;
+        let LaunchedChrome { child, profile_dir, ws_url, job } =
+            transport::launch_chrome(&opts.exe, opts.headless, &opts.chrome_flags, opts.debugging_port)
+                .context("launch chrome")?;
         crate::timing::record("devtools_url", started);
         let connect_started = std::time::Instant::now();
-        let client = handle
-            .block_on(CdpClient::connect(&ws_url))
-            .context("CDP connect")?;
+        let client = handle.block_on(CdpClient::connect(&ws_url)).context("CDP connect")?;
         crate::timing::record("ws_connect", connect_started);
         let mut browser = Self::finish(handle, client, Some(child), Some(profile_dir), ws_url);
         browser.job = job;
@@ -241,12 +234,7 @@ impl Browser {
         self.block_on(async {
             let ctx = self
                 .client
-                .send(
-                    "Target.createBrowserContext",
-                    json!({}),
-                    None,
-                    CMD_TIMEOUT,
-                )
+                .send("Target.createBrowserContext", json!({}), None, CMD_TIMEOUT)
                 .await
                 .context("Target.createBrowserContext")?;
             let browser_context_id = ctx
@@ -274,12 +262,7 @@ impl Browser {
                 .to_string();
             let session = self
                 .client
-                .send(
-                    "Target.attachToTarget",
-                    json!({ "targetId": target_id, "flatten": true }),
-                    None,
-                    CMD_TIMEOUT,
-                )
+                .send("Target.attachToTarget", json!({ "targetId": target_id, "flatten": true }), None, CMD_TIMEOUT)
                 .await
                 .context("Target.attachToTarget")?;
             let session_id = session
@@ -288,13 +271,8 @@ impl Browser {
                 .ok_or_else(|| anyhow::anyhow!("attachToTarget: no sessionId"))?
                 .to_string();
             self.shared.register(&session_id, &target_id);
-            let page = Page::new(
-                self.handle.clone(),
-                self.client.clone(),
-                session_id,
-                target_id,
-                Arc::clone(&self.shared),
-            );
+            let page =
+                Page::new(self.handle.clone(), self.client.clone(), session_id, target_id, Arc::clone(&self.shared));
             page.enable().await?;
             Ok(page)
         })
@@ -316,12 +294,7 @@ impl Browser {
         self.block_on(async {
             let session = self
                 .client
-                .send(
-                    "Target.attachToTarget",
-                    json!({ "targetId": target_id, "flatten": true }),
-                    None,
-                    CMD_TIMEOUT,
-                )
+                .send("Target.attachToTarget", json!({ "targetId": target_id, "flatten": true }), None, CMD_TIMEOUT)
                 .await
                 .context("Target.attachToTarget")?;
             let session_id = session
@@ -382,12 +355,7 @@ impl Browser {
         self.block_on(async {
             let target = self
                 .client
-                .send(
-                    "Target.createTarget",
-                    params,
-                    None,
-                    CMD_TIMEOUT,
-                )
+                .send("Target.createTarget", params, None, CMD_TIMEOUT)
                 .await
                 .context("Target.createTarget")?;
             let target_id = target
@@ -397,12 +365,7 @@ impl Browser {
                 .to_string();
             let session = self
                 .client
-                .send(
-                    "Target.attachToTarget",
-                    json!({ "targetId": target_id, "flatten": true }),
-                    None,
-                    CMD_TIMEOUT,
-                )
+                .send("Target.attachToTarget", json!({ "targetId": target_id, "flatten": true }), None, CMD_TIMEOUT)
                 .await
                 .context("Target.attachToTarget")?;
             let session_id = session
@@ -411,13 +374,8 @@ impl Browser {
                 .ok_or_else(|| anyhow::anyhow!("attachToTarget: no sessionId"))?
                 .to_string();
             self.shared.register(&session_id, &target_id);
-            let page = Page::new(
-                self.handle.clone(),
-                self.client.clone(),
-                session_id,
-                target_id,
-                Arc::clone(&self.shared),
-            );
+            let page =
+                Page::new(self.handle.clone(), self.client.clone(), session_id, target_id, Arc::clone(&self.shared));
             page.enable().await?;
             Ok(page)
         })
@@ -426,10 +384,7 @@ impl Browser {
     /// List open tab targets: (target_id, url).
     pub fn tab_targets(&self) -> Result<Vec<(String, String)>> {
         self.block_on(async {
-            let targets = self
-                .client
-                .send("Target.getTargets", json!({}), None, CMD_TIMEOUT)
-                .await?;
+            let targets = self.client.send("Target.getTargets", json!({}), None, CMD_TIMEOUT).await?;
             let mut out = Vec::new();
             if let Some(list) = targets.get("targetInfos").and_then(Value::as_array) {
                 for t in list {
@@ -454,28 +409,14 @@ impl Browser {
 
     pub fn activate_target(&self, target_id: &str) -> Result<()> {
         self.block_on(async {
-            self.client
-                .send(
-                    "Target.activateTarget",
-                    json!({ "targetId": target_id }),
-                    None,
-                    CMD_TIMEOUT,
-                )
-                .await?;
+            self.client.send("Target.activateTarget", json!({ "targetId": target_id }), None, CMD_TIMEOUT).await?;
             Ok(())
         })
     }
 
     pub fn close_target(&self, target_id: &str) -> Result<()> {
         self.block_on(async {
-            self.client
-                .send(
-                    "Target.closeTarget",
-                    json!({ "targetId": target_id }),
-                    None,
-                    CMD_TIMEOUT,
-                )
-                .await?;
+            self.client.send("Target.closeTarget", json!({ "targetId": target_id }), None, CMD_TIMEOUT).await?;
             Ok(())
         })
     }
@@ -544,8 +485,7 @@ impl Browser {
             job.terminate();
         }
         let _ = child.kill();
-        let deleted = cfg!(unix)
-            && profile.as_ref().is_none_or(|p| std::fs::remove_dir_all(p.path()).is_ok());
+        let deleted = cfg!(unix) && profile.as_ref().is_none_or(|p| std::fs::remove_dir_all(p.path()).is_ok());
         if deleted {
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -563,17 +503,13 @@ impl Browser {
 fn xvfb_available() -> bool {
     std::env::var_os("PATH")
         .map(|p| {
-            std::env::split_paths(&p).any(|d| {
-                d.join(if cfg!(windows) { "xvfb-run.exe" } else { "xvfb-run" })
-                    .is_file()
-            })
+            std::env::split_paths(&p).any(|d| d.join(if cfg!(windows) { "xvfb-run.exe" } else { "xvfb-run" }).is_file())
         })
         .unwrap_or(false)
 }
 
 /// Pick a free localhost TCP port by binding to port 0 and releasing it.
 fn free_port() -> Result<u16> {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").context("bind 127.0.0.1:0 for a free port")?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("bind 127.0.0.1:0 for a free port")?;
     Ok(listener.local_addr()?.port())
 }

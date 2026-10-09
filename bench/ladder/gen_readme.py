@@ -1,7 +1,7 @@
 """Regenerate README's '## Benchmarks' section from a ladder publish.json.
 
 Usage: gen_readme.py README.md publish.json ["what the nv-baseline A/B changed"]
-(AGENTS.md: numbers in README come from a run's publish.json, never retyped.)"""
+Numbers in README come from a run's publish.json, never retyped."""
 import json
 import sys
 

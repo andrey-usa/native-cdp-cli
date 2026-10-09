@@ -8,27 +8,15 @@ use serde_json::Value;
 
 fn tool_exe() -> std::path::PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
-    let name = if cfg!(windows) {
-        "navigera.exe"
-    } else {
-        "navigera"
-    };
+    let name = if cfg!(windows) { "navigera.exe" } else { "navigera" };
     // Integration tests live in `target/<profile>/deps/`; the tool binary is
     // two levels up in `target/<profile>/`.
     let direct = exe.with_file_name(name);
     if direct.exists() {
         return direct;
     }
-    let parent = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join(name))
-        .expect("tool binary path");
-    assert!(
-        parent.exists(),
-        "build the tool first: cargo build --bin navigera ({})",
-        parent.display()
-    );
+    let parent = exe.parent().and_then(|p| p.parent()).map(|p| p.join(name)).expect("tool binary path");
+    assert!(parent.exists(), "build the tool first: cargo build --bin navigera ({})", parent.display());
     parent
 }
 
@@ -99,30 +87,18 @@ fn navigera_serve_protocol_roundtrip() {
     }
 
     // Unknown op -> ok:false with the request id echoed back.
-    let bad = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 7, "op": "frobnicate"}),
-    );
+    let bad = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 7, "op": "frobnicate"}));
     assert_eq!(bad["id"], 7);
     assert_eq!(bad["ok"], false);
 
     let page: String = "data:text/html,".to_string()
         + &"<title>Tool%20Test</title><h1>Hello</h1><input id='kw' value=''>".replace(' ', "%20");
 
-    let opened = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 1, "op": "tab-new", "url": page}),
-    );
+    let opened = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 1, "op": "tab-new", "url": page}));
     assert_eq!(opened["ok"], true, "{opened}");
     assert_eq!(opened["result"]["active"], 1);
 
-    let title = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 2, "op": "title"}),
-    );
+    let title = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 2, "op": "title"}));
     assert_eq!(title["ok"], true, "{title}");
     assert_eq!(title["result"], "Tool Test");
 
@@ -141,11 +117,7 @@ fn navigera_serve_protocol_roundtrip() {
     assert_eq!(readback["ok"], true, "{readback}");
     assert_eq!(readback["result"], "600-10070");
 
-    let tabs = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 5, "op": "tab-list"}),
-    );
+    let tabs = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 5, "op": "tab-list"}));
     assert_eq!(tabs["ok"], true, "{tabs}");
     assert_eq!(tabs["result"]["tabs"].as_array().unwrap().len(), 2);
 
@@ -157,11 +129,7 @@ fn navigera_serve_protocol_roundtrip() {
             "() => { const b = document.createElement('button'); b.textContent = 'Go'; b.onclick = (e) => { document.title = e.isTrusted ? 'clicked' : 'synthetic'; }; document.body.appendChild(b); return true; }"}),
     );
     assert_eq!(added["ok"], true, "{added}");
-    let ax = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 11, "op": "ax", "format": "json"}),
-    );
+    let ax = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 11, "op": "ax", "format": "json"}));
     assert_eq!(ax["ok"], true, "{ax}");
     let nodes = ax["result"].as_array().expect("ax returns an array");
     let find = |role: &str, name: Option<&str>| -> u64 {
@@ -179,17 +147,9 @@ fn navigera_serve_protocol_roundtrip() {
         ax["result"]
     );
     let button = find("button", Some("Go"));
-    let clicked = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 12, "op": "click", "ref": button}),
-    );
+    let clicked = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 12, "op": "click", "ref": button}));
     assert_eq!(clicked["ok"], true, "{clicked}");
-    let title = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 13, "op": "title"}),
-    );
+    let title = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 13, "op": "title"}));
     assert_eq!(title["result"], "clicked", "click by ref fires the handler with a trusted (CDP Input) event");
     let textbox = find("textbox", None);
     let filled = roundtrip(
@@ -204,11 +164,7 @@ fn navigera_serve_protocol_roundtrip() {
         &serde_json::json!({"id": 15, "op": "eval", "expression": "() => document.querySelector('#kw').value"}),
     );
     assert_eq!(readback["result"], "via-ref");
-    let full = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 16, "op": "ax", "all": true}),
-    );
+    let full = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 16, "op": "ax", "all": true}));
     assert!(
         full["result"].as_array().map(Vec::len).unwrap_or(0) >= nodes.len(),
         "`all` is a superset of the compact view"
@@ -228,11 +184,7 @@ fn navigera_serve_protocol_roundtrip() {
         &serde_json::json!({"id": 18, "op": "click", "selector": "#late", "timeout_ms": 5000}),
     );
     assert_eq!(late["ok"], true, "click waits for the element: {late}");
-    let title = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 19, "op": "title"}),
-    );
+    let title = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 19, "op": "title"}));
     assert_eq!(title["result"], "late-clicked");
     let missing = roundtrip(
         &mut stdin,
@@ -283,11 +235,7 @@ fn navigera_serve_protocol_roundtrip() {
         assert!(response["error"].as_str().unwrap_or("").contains("JSON array"), "{response}");
     }
 
-    let bye = roundtrip(
-        &mut stdin,
-        &mut stdout,
-        &serde_json::json!({"id": 6, "op": "quit"}),
-    );
+    let bye = roundtrip(&mut stdin, &mut stdout, &serde_json::json!({"id": 6, "op": "quit"}));
     assert_eq!(bye["ok"], true);
     assert_eq!(bye["result"]["bye"], true);
 
@@ -298,28 +246,17 @@ fn navigera_serve_protocol_roundtrip() {
 
 /// Run `navigera <args>` to completion; returns (success, stdout JSON).
 fn run_tool(args: &[&str]) -> (bool, Value) {
-    let out = Command::new(tool_exe())
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run navigera");
+    let out = Command::new(tool_exe()).args(args).stdin(Stdio::null()).output().expect("run navigera");
     let text = String::from_utf8_lossy(&out.stdout);
     let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| {
-        panic!(
-            "stdout must be one JSON object for {args:?}: {text}\nstderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
+        panic!("stdout must be one JSON object for {args:?}: {text}\nstderr: {}", String::from_utf8_lossy(&out.stderr))
     });
     (out.status.success(), value)
 }
 
 /// Run `navigera <args>`; returns (success, raw stdout).
 fn run_tool_raw(args: &[&str]) -> (bool, String) {
-    let out = Command::new(tool_exe())
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run navigera");
+    let out = Command::new(tool_exe()).args(args).stdin(Stdio::null()).output().expect("run navigera");
     (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -358,14 +295,15 @@ fn navigera_named_session_across_processes() {
     let (ok, flat) = run_tool(&["--session", s, "ax", "--format", "json"]);
     assert!(ok, "ax json: {flat}");
     let link = flat["result"].as_array().and_then(|nodes| nodes.iter().find(|n| n["role"] == "link"));
-    assert!(
-        link.and_then(|l| l["url"].as_str()).is_some_and(|u| u.ends_with("/x")),
-        "link has its url: {flat}"
-    );
+    assert!(link.and_then(|l| l["url"].as_str()).is_some_and(|u| u.ends_with("/x")), "link has its url: {flat}");
 
     // Scripts from a file or stdin skip the shell's quoting entirely.
     let script = std::env::temp_dir().join(format!("nv-test-{}.js", std::process::id()));
-    std::fs::write(&script, "() => [...document.querySelectorAll('a')].map(a => a.textContent + \"\\\\\" + /\\d+/.source)").unwrap();
+    std::fs::write(
+        &script,
+        "() => [...document.querySelectorAll('a')].map(a => a.textContent + \"\\\\\" + /\\d+/.source)",
+    )
+    .unwrap();
     let (ok, from_file) = run_tool(&["--session", s, "eval", "--file", script.to_str().unwrap()]);
     let _ = std::fs::remove_file(&script);
     assert!(ok && from_file["result"] == serde_json::json!(["Link\\\\d+"]), "eval --file: {from_file}");

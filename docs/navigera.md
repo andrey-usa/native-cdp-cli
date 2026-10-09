@@ -9,7 +9,7 @@ binary. There are three ways to run it:
 | **serve** | `navigera serve`; JSON commands on stdin, one JSON response per line | programs holding a pipe open |
 | **one-shot** | `navigera <command> …` | a single action (launches and closes a browser) |
 
-The agent-oriented guide is [the skill](../.claude/skills/navigera/SKILL.md),
+The agent-oriented guide is [the skill](../skills/navigera/SKILL.md),
 also printed by `navigera skill`. This page is the full reference.
 
 ## CLI shape

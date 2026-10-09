@@ -1,17 +1,23 @@
 name: release
 
-# Prebuilt binaries for agents and people without a Rust toolchain:
-# static Linux (musl) x86_64/aarch64, macOS arm64/x86_64 and Windows x64,
-# attached to a GitHub release. install.sh / install.ps1 download the right
-# one.
+# Prebuilt binaries for static Linux (musl) x86_64/aarch64, macOS
+# arm64/x86_64 and Windows x64, attached to a GitHub release, then the same
+# binaries repackaged for crates.io, npm, PyPI, Homebrew and Scoop.
 #
-# Releasing is one tap: Actions -> release -> Run workflow on master, with
-# the version from Cargo.toml (e.g. 0.3.0). The run checks that the version
-# matches Cargo.toml, builds every target, then creates the tag v<version>
-# on that commit and the release. No local git or token needed (the GitHub
-# app works). Pushing a v* tag still works too; a tag whose version doesn't
-# match Cargo.toml fails before building. Running it for a version whose
-# tag already exists rebuilds that tag and replaces the release's files.
+# Releasing: Actions -> release -> Run workflow on master with the version
+# from Cargo.toml (e.g. 0.4.0). The run checks that the version matches
+# Cargo.toml, builds every target, tags v<version> on that commit and creates
+# the release. Pushing a v* tag works too. Running it again for a version
+# whose tag exists rebuilds that tag, replaces the release's files and
+# publishes to any registry that doesn't have that version yet.
+#
+# Each registry is switched on by a repository variable (Settings -> Secrets
+# and variables -> Actions -> Variables), once its trusted publisher exists:
+#   PUBLISH_CRATES=true  PUBLISH_NPM=true  PUBLISH_PYPI=true
+#   HOMEBREW_TAP=<owner>/homebrew-tap  SCOOP_BUCKET=<owner>/scoop-bucket
+#   (the last two push with the secret TAP_TOKEN)
+# Switched off, the packages are still built and installed in the
+# `packages` job, so a dry run checks them too.
 
 on:
   push:
@@ -22,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "version to release, as in Cargo.toml (e.g. 0.3.0); tags this commit v<version>"
+        description: "version to release, as in Cargo.toml (e.g. 0.4.0); tags this commit v<version>"
         required: true
       publish:
         description: "publish (off = dry run: build and package only)"
@@ -152,3 +158,155 @@ jobs:
           fi
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
           echo "::notice title=release::$TAG published with $(ls dist | wc -l) files: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+
+  packages:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: meta
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import tomllib
+          pkg = tomllib.load(open("Cargo.toml", "rb"))["package"]
+          print(f"version={pkg['version']}")
+          print(f"description={pkg['description']}")
+          print(f"keywords={','.join(pkg.get('keywords', []))}")
+          EOF
+      - name: Build npm packages, wheels, Homebrew formula and Scoop manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DESCRIPTION: ${{ steps.meta.outputs.description }}
+          KEYWORDS: ${{ steps.meta.outputs.keywords }}
+        run: |
+          for kind in npm wheel homebrew scoop; do
+            python3 packaging/package.py "$kind" --name navigera --version "$VERSION" --dist dist --out pkg \
+              --repo "$GITHUB_REPOSITORY" --description "$DESCRIPTION" --keywords "$KEYWORDS"
+          done
+          for dir in pkg/npm/*/; do (cd "$dir" && npm pack --silent); done
+      - name: Install and run them
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet pkg/wheels/*manylinux*x86_64*.whl
+          /tmp/venv/bin/navigera --version
+          /tmp/venv/bin/pip install --quiet twine && /tmp/venv/bin/twine check pkg/wheels/*.whl
+          mkdir /tmp/npm-test && cd /tmp/npm-test && npm init -y >/dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/pkg/npm/navigera-linux-x64/*.tgz "$GITHUB_WORKSPACE"/pkg/npm/navigera/*.tgz
+          npx navigera --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: pkg/
+
+  crates:
+    needs: [plan, publish, packages]
+    if: needs.plan.outputs.publish == 'true' && vars.PUBLISH_CRATES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.packages.outputs.version }}
+        run: |
+          if curl -sfA "github.com/$GITHUB_REPOSITORY" "https://crates.io/api/v1/crates/navigera/$VERSION" >/dev/null; then
+            echo "::notice title=crates.io::navigera $VERSION is already published"
+          else
+            cargo publish --locked
+          fi
+
+  npm:
+    needs: [plan, publish, packages]
+    if: needs.plan.outputs.publish == 'true' && vars.PUBLISH_NPM == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - env:
+          VERSION: ${{ needs.packages.outputs.version }}
+        run: |
+          # Platform packages first: the main package depends on them.
+          for dir in $(ls -d pkg/npm/*/ | grep -v '/navigera/$') pkg/npm/navigera/; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "::notice title=npm::$name $VERSION is already published"
+            else
+              (cd "$dir" && npm publish --provenance --access public)
+            fi
+          done
+
+  pypi:
+    needs: [plan, publish, packages]
+    if: needs.plan.outputs.publish == 'true' && vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: pkg
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pkg/wheels
+          skip-existing: true
+
+  taps:
+    needs: [plan, publish, packages]
+    if: needs.plan.outputs.publish == 'true' && (vars.HOMEBREW_TAP != '' || vars.SCOOP_BUCKET != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: pkg
+      - env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
+          SCOOP_BUCKET: ${{ vars.SCOOP_BUCKET }}
+          VERSION: ${{ needs.packages.outputs.version }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          update() {  # repo, source file, path in repo
+            [ -n "$1" ] || return 0
+            git clone -q "https://x-access-token:$GH_TOKEN@github.com/$1.git" "tap-$1"
+            mkdir -p "$(dirname "tap-$1/$3")" && cp "$2" "tap-$1/$3"
+            cd "tap-$1"
+            git add "$3"
+            git diff --cached --quiet || { git commit -qm "navigera $VERSION" && git push -q; }
+            cd - >/dev/null
+          }
+          update "$HOMEBREW_TAP" pkg/navigera.rb Formula/navigera.rb
+          update "$SCOOP_BUCKET" pkg/navigera.json bucket/navigera.json

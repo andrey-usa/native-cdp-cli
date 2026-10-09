@@ -64,9 +64,7 @@ impl KillOnDrop {
     /// Take ownership back (e.g. to hand the child to the session) and stop
     /// killing on drop.
     fn disarm(mut self) -> Child {
-        self.0
-            .take()
-            .expect("guard disarmed")
+        self.0.take().expect("guard disarmed")
     }
 }
 
@@ -102,30 +100,24 @@ pub fn launch_chrome(
     } else {
         cmd.arg("--remote-debugging-port=0");
     }
-    cmd.arg(format!(
-        "--user-data-dir={}",
-        profile_dir.path().display()
-    ))
-    // No start URL: with `--no-startup-window` (see BrowserSession) Chrome
-    // opens no initial tab, so the only renderer started is the session's own
-    // page instead of an extra, never-used about:blank tab.
-    .args(chrome_flags)
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    // Pipe stderr: scanned for the DevTools URL, captured for diagnostics, and
-    // kept off our inherited stderr so Chrome child-process noise can't mask the
-    // `navigera` error reporting that lives on our stderr.
-    .stderr(Stdio::piped());
+    cmd.arg(format!("--user-data-dir={}", profile_dir.path().display()))
+        // No start URL: with `--no-startup-window` (see BrowserSession) Chrome
+        // opens no initial tab, so the only renderer started is the session's own
+        // page instead of an extra, never-used about:blank tab.
+        .args(chrome_flags)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        // Pipe stderr: scanned for the DevTools URL, captured for diagnostics, and
+        // kept off our inherited stderr so Chrome child-process noise can't mask the
+        // `navigera` error reporting that lives on our stderr.
+        .stderr(Stdio::piped());
 
     own_process_group(&mut cmd);
     let mut child = cmd.spawn().context("spawn chrome")?;
     super::profile::record_browser(&profile_dir, child.id());
     // Before Chrome starts its own children, so they land in the job too.
     let job = super::procjob::ProcJob::contain(&child);
-    let stderr = child
-        .stderr
-        .take()
-        .context("chrome was spawned without a stderr pipe")?;
+    let stderr = child.stderr.take().context("chrome was spawned without a stderr pipe")?;
     let mut kill = KillOnDrop(Some(child));
     let capture = Capture::start(stderr);
 
@@ -177,12 +169,7 @@ pub fn launch_chrome(
     // never blocks on a full pipe buffer; the thread ends itself on Chrome exit.
     capture.detach();
 
-    Ok(LaunchedChrome {
-        child: kill.disarm(),
-        profile_dir,
-        ws_url,
-        job,
-    })
+    Ok(LaunchedChrome { child: kill.disarm(), profile_dir, ws_url, job })
 }
 
 /// A browser launched with `--remote-debugging-pipe`: CDP runs over two
@@ -216,10 +203,8 @@ impl StderrTail {
     pub fn tail(&self) -> String {
         let b = self.0.lock().map(|b| b.clone()).unwrap_or_default();
         let text = String::from_utf8_lossy(&b);
-        let lines: Vec<&str> = text
-            .lines()
-            .filter(|l| !l.is_empty() && !l.contains("dbus") && !l.contains("Fontconfig"))
-            .collect();
+        let lines: Vec<&str> =
+            text.lines().filter(|l| !l.is_empty() && !l.contains("dbus") && !l.contains("Fontconfig")).collect();
         let joined = lines[lines.len().saturating_sub(6)..].join("\n");
         let start = joined.len().saturating_sub(800);
         joined[joined.ceil_char_boundary(start)..].to_string()
@@ -278,11 +263,8 @@ pub fn launch_chrome_pipe(exe: &str, headless: bool, chrome_flags: &[String]) ->
     // The child's ends live on in Chrome; close ours so EOF propagates.
     drop(cmd_read);
     drop(reply_write);
-    let stderr = child
-        .stderr
-        .take()
-        .map(|e| StderrTail(Capture::start(e).buf))
-        .unwrap_or_else(|| StderrTail(Arc::default()));
+    let stderr =
+        child.stderr.take().map(|e| StderrTail(Capture::start(e).buf)).unwrap_or_else(|| StderrTail(Arc::default()));
     Ok(LaunchedPipe {
         child,
         profile_dir,
@@ -319,9 +301,7 @@ fn chrome_log() -> Option<std::fs::File> {
 fn extract_devtools_url(line: &str) -> Option<String> {
     let start = line.find(DEVTOOLS_LISTENING)?;
     let rest = &line[start + DEVTOOLS_LISTENING.len()..];
-    rest.split_whitespace()
-        .next()
-        .map(|url| format!("ws://{url}"))
+    rest.split_whitespace().next().map(|url| format!("ws://{url}"))
 }
 
 /// Background drain of a child's stderr: records the DevTools URL the moment
@@ -341,41 +321,37 @@ impl Capture {
         let buf_clone = Arc::clone(&buf);
         let capturing_clone = Arc::clone(&capturing);
 
-            thread::spawn(move || {
-                let reader = std::io::BufReader::new(stderr).lines();
-                let mut announced = false;
-                let mut log = chrome_log();
-                for line in reader.map_while(Result::ok) {
-                    if let Some(f) = log.as_mut() {
-                        let _ = writeln!(f, "{line}");
-                    }
-                    if !announced {
-                        if let Some(u) = extract_devtools_url(&line) {
-                            announced = true;
-                            let _ = url_tx.send(u);
-                        }
-                    }
-                    if capturing_clone.load(Ordering::Relaxed) {
-                        let mut b = match buf_clone.lock() {
-                            Ok(g) => g,
-                            Err(_) => break,
-                        };
-                        b.extend_from_slice(line.as_bytes());
-                        b.push(b'\n');
-                        if b.len() > STDERR_BUF_CAP {
-                            // Keep only the most recent half to bound memory.
-                            let drain = b.len() - STDERR_BUF_CAP / 2;
-                            b.drain(..drain);
-                        }
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr).lines();
+            let mut announced = false;
+            let mut log = chrome_log();
+            for line in reader.map_while(Result::ok) {
+                if let Some(f) = log.as_mut() {
+                    let _ = writeln!(f, "{line}");
+                }
+                if !announced {
+                    if let Some(u) = extract_devtools_url(&line) {
+                        announced = true;
+                        let _ = url_tx.send(u);
                     }
                 }
-            });
+                if capturing_clone.load(Ordering::Relaxed) {
+                    let mut b = match buf_clone.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
+                    };
+                    b.extend_from_slice(line.as_bytes());
+                    b.push(b'\n');
+                    if b.len() > STDERR_BUF_CAP {
+                        // Keep only the most recent half to bound memory.
+                        let drain = b.len() - STDERR_BUF_CAP / 2;
+                        b.drain(..drain);
+                    }
+                }
+            }
+        });
 
-        Self {
-            url,
-            buf,
-            capturing,
-        }
+        Self { url, buf, capturing }
     }
 
     /// Wait up to `timeout` for Chrome to announce its DevTools URL.
@@ -450,10 +426,7 @@ pub fn poll_ws_url_standalone(port: u16, timeout: Duration) -> Result<String> {
         match http_get_body("127.0.0.1", port, "/json/version") {
             Ok(body) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(url) = v
-                        .get("webSocketDebuggerUrl")
-                        .and_then(|u| u.as_str())
-                    {
+                    if let Some(url) = v.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
                         return Ok(url.to_string());
                     }
                 }
@@ -487,10 +460,7 @@ fn poll_ws_url(port: u16, timeout: Duration, child: &mut Child) -> Result<String
         match http_get_body("127.0.0.1", port, "/json/version") {
             Ok(body) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(url) = v
-                        .get("webSocketDebuggerUrl")
-                        .and_then(|u| u.as_str())
-                    {
+                    if let Some(url) = v.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
                         return Ok(url.to_string());
                     }
                 }
@@ -520,10 +490,7 @@ pub(crate) fn http_get_body(host: &str, port: u16, path: &str) -> Result<String>
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     // NB: Chrome's DevTools HTTP server rejects HTTP/1.0 outright.
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    )?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -553,11 +520,7 @@ fn complete_body(buf: &[u8]) -> Option<Vec<u8>> {
     let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
     let body = &buf[header_end + 4..];
-    let header = |name: &str| {
-        head.lines()
-            .find_map(|line| line.strip_prefix(name))
-            .map(|v| v.trim().to_string())
-    };
+    let header = |name: &str| head.lines().find_map(|line| line.strip_prefix(name)).map(|v| v.trim().to_string());
     if let Some(len) = header("content-length:").and_then(|v| v.parse::<usize>().ok()) {
         return (body.len() >= len).then(|| body[..len].to_vec());
     }
@@ -586,10 +549,7 @@ mod tests {
     #[test]
     fn extracts_devtools_url_from_chrome_stderr() {
         let line = "DevTools listening on ws://127.0.0.1:65408/devtools/browser/abc-123";
-        assert_eq!(
-            extract_devtools_url(line),
-            Some("ws://127.0.0.1:65408/devtools/browser/abc-123".to_string())
-        );
+        assert_eq!(extract_devtools_url(line), Some("ws://127.0.0.1:65408/devtools/browser/abc-123".to_string()));
     }
 
     #[test]

@@ -123,9 +123,7 @@ fn common_executables() -> Vec<String> {
 /// For headless sessions chrome-headless-shell comes first: it starts 2-3x
 /// faster than full Chrome (no browser UI layer to bring up).
 fn cached_browsers(headless: bool) -> Vec<String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
     let mut roots = vec![format!("{home}/.cache/ms-playwright")];
     if let Ok(p) = std::env::var("LOCALAPPDATA") {
         roots.push(format!("{p}/ms-playwright"));
@@ -152,24 +150,40 @@ fn cached_browsers(headless: bool) -> Vec<String> {
     let mut shells = Vec::new();
     let mut full = Vec::new();
     for root in &roots {
-        shells.extend(pick(root, "chromium_headless_shell-", &[
-            "chrome-linux/headless_shell",
-            "chrome-headless-shell-linux64/chrome-headless-shell",
-            "chrome-mac/headless_shell",
-            "chrome-win/headless_shell.exe",
-            "chrome-headless-shell-win64/chrome-headless-shell.exe",
-        ]));
-        full.extend(pick(root, "chromium-", &[
-            "chrome-linux/chrome",
-            "chrome-linux64/chrome",
-            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-            "chrome-win/chrome.exe",
-            "chrome-win64/chrome.exe",
-        ]));
+        shells.extend(pick(
+            root,
+            "chromium_headless_shell-",
+            &[
+                "chrome-linux/headless_shell",
+                "chrome-headless-shell-linux64/chrome-headless-shell",
+                "chrome-mac/headless_shell",
+                "chrome-win/headless_shell.exe",
+                "chrome-headless-shell-win64/chrome-headless-shell.exe",
+            ],
+        ));
+        full.extend(pick(
+            root,
+            "chromium-",
+            &[
+                "chrome-linux/chrome",
+                "chrome-linux64/chrome",
+                "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                "chrome-win/chrome.exe",
+                "chrome-win64/chrome.exe",
+            ],
+        ));
     }
     let puppeteer = format!("{home}/.cache/puppeteer");
-    shells.extend(pick(&format!("{puppeteer}/chrome-headless-shell"), "linux-", &["chrome-headless-shell-linux64/chrome-headless-shell"]));
-    shells.extend(pick(&format!("{puppeteer}/chrome-headless-shell"), "win64-", &["chrome-headless-shell-win64/chrome-headless-shell.exe"]));
+    shells.extend(pick(
+        &format!("{puppeteer}/chrome-headless-shell"),
+        "linux-",
+        &["chrome-headless-shell-linux64/chrome-headless-shell"],
+    ));
+    shells.extend(pick(
+        &format!("{puppeteer}/chrome-headless-shell"),
+        "win64-",
+        &["chrome-headless-shell-win64/chrome-headless-shell.exe"],
+    ));
     full.extend(pick(&format!("{puppeteer}/chrome"), "linux-", &["chrome-linux64/chrome"]));
     full.extend(pick(&format!("{puppeteer}/chrome"), "win64-", &["chrome-win64/chrome.exe"]));
     if headless {
@@ -208,10 +222,7 @@ pub fn resolve_executable_for(cli_override: Option<&str>, headless: bool) -> Opt
 
 /// True when `--engine` selects the Lightpanda CDP server instead of Chromium.
 pub fn is_lightpanda(engine: &str) -> bool {
-    matches!(
-        engine.trim().to_ascii_lowercase().as_str(),
-        "lightpanda" | "panda"
-    )
+    matches!(engine.trim().to_ascii_lowercase().as_str(), "lightpanda" | "panda")
 }
 
 /// Resolve the `lightpanda` binary for direct `lightpanda serve` launch.
@@ -225,14 +236,9 @@ fn resolve_lightpanda_bin(cli_override: Option<&str>) -> Result<String> {
             // path that leaked in from $CHROME_BIN-style defaults would be
             // launched as `chrome serve --port …` and then time out waiting
             // for a /json/version that never comes. Fail fast instead.
-            let file = Path::new(path)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
-            if ["chrome", "chromium", "msedge", "edge", "brave"]
-                .iter()
-                .any(|b| file.contains(b))
-            {
+            let file =
+                Path::new(path).file_name().map(|f| f.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            if ["chrome", "chromium", "msedge", "edge", "brave"].iter().any(|b| file.contains(b)) {
                 bail!(
                     "--engine lightpanda was given a Chromium binary ({path}); pass the lightpanda binary via --chromium or $LIGHTPANDA_BIN"
                 );
@@ -255,11 +261,7 @@ fn resolve_lightpanda_bin(cli_override: Option<&str>) -> Result<String> {
 fn which_lightpanda() -> Result<String> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(if cfg!(windows) {
-            "lightpanda.exe"
-        } else {
-            "lightpanda"
-        });
+        let candidate = dir.join(if cfg!(windows) { "lightpanda.exe" } else { "lightpanda" });
         if candidate.is_file() {
             return Ok(candidate.to_string_lossy().into_owned());
         }
@@ -318,12 +320,7 @@ impl BrowserSession {
     ///
     /// `engine` is `chrome` (Chromium/Chrome/Edge) or `lightpanda` (a
     /// Lightpanda CDP server, started directly as `lightpanda serve`).
-    pub fn launch(
-        engine: &str,
-        headless: bool,
-        executable: Option<&str>,
-        nav_timeout_ms: f64,
-    ) -> Result<Self> {
+    pub fn launch(engine: &str, headless: bool, executable: Option<&str>, nav_timeout_ms: f64) -> Result<Self> {
         Self::launch_with(engine, headless, executable, nav_timeout_ms, None)
     }
 
@@ -357,10 +354,7 @@ impl BrowserSession {
             // No Chromium flags, no shim, no X server involved.
             let bin = resolve_lightpanda_bin(executable)?;
             let browser = Browser::launch_lightpanda(&handle, &bin)?;
-            crate::timing::log(&format!(
-                "[browser] engine=lightpanda launched {} via {bin}",
-                browser.ws_url()
-            ));
+            crate::timing::log(&format!("[browser] engine=lightpanda launched {} via {bin}", browser.ws_url()));
             (browser, bin)
         } else {
             let Some(exe) = resolve_executable_for(executable, headless) else {
@@ -391,9 +385,7 @@ impl BrowserSession {
         } else {
             // The first command is where a browser that died at startup
             // (missing libraries, bad flag) shows up: say why.
-            browser
-                .new_page(Some("about:blank"))
-                .map_err(|e| anyhow::anyhow!("{e:#} ({})", browser.death_report()))?
+            browser.new_page(Some("about:blank")).map_err(|e| anyhow::anyhow!("{e:#} ({})", browser.death_report()))?
         };
         crate::timing::record("first_page", page_started);
         crate::timing::record("launch_total", launch_started);
@@ -628,7 +620,9 @@ impl BrowserSession {
     /// Settle after an action: up to the op's own `timeout_ms` if it gave
     /// one, else the navigation timeout.
     fn settle_for(&self, timeout_ms: Option<f64>) -> bool {
-        self.settle_within(timeout_ms.map(|ms| Duration::from_secs_f64(ms / 1000.0)).unwrap_or_else(|| self.timeout(None)))
+        self.settle_within(
+            timeout_ms.map(|ms| Duration::from_secs_f64(ms / 1000.0)).unwrap_or_else(|| self.timeout(None)),
+        )
     }
 
     /// Let fetch/XHR data the active tab is loading arrive before a read
@@ -650,10 +644,7 @@ impl BrowserSession {
 
     /// Current URL and title in one round trip.
     pub fn url_title(&self) -> (String, String) {
-        let v = self
-            .active_tab()
-            .evaluate("[location.href, document.title]", self.timeout(None))
-            .unwrap_or_default();
+        let v = self.active_tab().evaluate("[location.href, document.title]", self.timeout(None)).unwrap_or_default();
         let get = |i: usize| v.get(i).and_then(|x| x.as_str()).unwrap_or_default().to_string();
         (get(0), get(1))
     }
@@ -731,14 +722,8 @@ impl BrowserSession {
     }
 
     /// Run a JS expression with an explicit timeout override.
-    pub fn evaluate_with_timeout<T: DeserializeOwned>(
-        &self,
-        expression: &str,
-        timeout_ms: Option<f64>,
-    ) -> Result<T> {
-        let value = self
-            .active_tab()
-            .evaluate(expression, self.timeout(timeout_ms))?;
+    pub fn evaluate_with_timeout<T: DeserializeOwned>(&self, expression: &str, timeout_ms: Option<f64>) -> Result<T> {
+        let value = self.active_tab().evaluate(expression, self.timeout(timeout_ms))?;
         Ok(serde_json::from_value(value)?)
     }
 
@@ -792,7 +777,13 @@ impl BrowserSession {
         Ok(())
     }
 
-    pub fn scroll(&self, target: Option<&Target>, dy: Option<f64>, to: Option<&str>, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+    pub fn scroll(
+        &self,
+        target: Option<&Target>,
+        dy: Option<f64>,
+        to: Option<&str>,
+        timeout_ms: Option<f64>,
+    ) -> Result<serde_json::Value> {
         let (wait, timeout) = self.element_budget(timeout_ms);
         self.active_tab().scroll(target, dy, to, wait, timeout)
     }
@@ -849,13 +840,8 @@ impl BrowserSession {
     }
 
     /// First element's text content with an explicit timeout override.
-    pub fn text_with_timeout(
-        &self,
-        selector: &str,
-        timeout_ms: Option<f64>,
-    ) -> Result<Option<String>> {
-        self.active_tab()
-            .text_content(selector, self.timeout(timeout_ms))
+    pub fn text_with_timeout(&self, selector: &str, timeout_ms: Option<f64>) -> Result<Option<String>> {
+        self.active_tab().text_content(selector, self.timeout(timeout_ms))
     }
 
     /// Page title of the active tab.
@@ -869,22 +855,13 @@ impl BrowserSession {
     }
 
     /// Legacy flat accessibility snapshot (`[{ref, role, name, value?}]`).
-    pub fn ax_tree(
-        &self,
-        max_depth: Option<u32>,
-        all: bool,
-        timeout_ms: Option<f64>,
-    ) -> Result<serde_json::Value> {
-        self.ax(
-            &AxOptions { max_depth, json: true, all, ..AxOptions::default() },
-            timeout_ms,
-        )
+    pub fn ax_tree(&self, max_depth: Option<u32>, all: bool, timeout_ms: Option<f64>) -> Result<serde_json::Value> {
+        self.ax(&AxOptions { max_depth, json: true, all, ..AxOptions::default() }, timeout_ms)
     }
 
     /// Viewport PNG screenshot bytes (`full_page` captures beyond viewport).
     pub fn screenshot_png(&self, full_page: bool) -> Result<Vec<u8>> {
-        self.active_tab()
-            .screenshot_png(self.timeout(None), full_page)
+        self.active_tab().screenshot_png(self.timeout(None), full_page)
     }
 
     /// True when this session drives Lightpanda rather than Chromium.

@@ -17,7 +17,11 @@ fn tool_exe() -> String {
 
 /// The fixture servers are Python; Windows installs it as `python`.
 fn python() -> &'static str {
-    if cfg!(windows) { "python" } else { "python3" }
+    if cfg!(windows) {
+        "python"
+    } else {
+        "python3"
+    }
 }
 
 fn chrome() -> Option<String> {
@@ -30,10 +34,7 @@ fn chrome() -> Option<String> {
 }
 
 fn session_name(test: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("nv-attach-{test}-{}.sock", std::process::id()))
-        .display()
-        .to_string()
+    std::env::temp_dir().join(format!("nv-attach-{test}-{}.sock", std::process::id())).display().to_string()
 }
 
 /// One CLI step against a session; returns (exit ok, JSON).
@@ -202,7 +203,11 @@ fn profile_browser_outlives_sessions_and_keeps_cookies() {
     let started = Instant::now();
     start(&s);
     assert!(started.elapsed() < Duration::from_secs(10), "reconnecting is quick");
-    assert_eq!(active_port(Path::new(&dir), Duration::from_secs(1)), Some(first.clone()), "same browser, not a new one");
+    assert_eq!(
+        active_port(Path::new(&dir), Duration::from_secs(1)),
+        Some(first.clone()),
+        "same browser, not a new one"
+    );
     ok(&s, &["goto", &format!("{base}/title")]);
     let cookie = ok(&s, &["eval", "document.cookie"]);
     assert!(cookie.as_str().unwrap_or("").contains("nv=kept"), "cookie survives the session: {cookie}");

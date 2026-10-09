@@ -1,13 +1,13 @@
 name: vendor
 
 # Publishes `cargo vendor` output to the git ref `refs/cache/vendor` (not a
-# branch, so it never shows up in the branch list). Agent sandboxes usually
-# can reach github.com over git but not crates.io; with this ref they can
-# build and run the browser e2e tests offline:
+# branch, so it never shows up in the branch list). Machines that can reach
+# github.com over git but not crates.io can build and run the browser e2e
+# tests offline from it:
 #
 #   git fetch origin refs/cache/vendor:refs/cache/vendor
 #   git worktree add ../nv-vendor refs/cache/vendor   # or: git archive | tar x
-#   # then point cargo at it, see AGENTS.md "Offline builds"
+#   # then point cargo at it, see CONTRIBUTING.md "Offline builds"
 
 on:
   push:

@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use std::time::Duration;
 
@@ -51,9 +51,7 @@ fn close_all(closed: &AtomicBool, pending: &Mutex<HashMap<u64, Responder>>) {
 
 impl Clone for CdpClient {
     fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
+        Self { inner: Arc::clone(&self.inner) }
     }
 }
 
@@ -68,18 +66,14 @@ impl CdpClient {
     /// [`CdpClient::connect`] with its own bound: attaching to a user's
     /// Chrome waits while Chrome asks them to allow the connection.
     pub async fn connect_within(ws_url: &str, bound: Duration) -> Result<Self> {
-        let (ws, _) = tokio::time::timeout(
-            bound,
-            tokio_tungstenite::connect_async(ws_url),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("CDP websocket connect to {ws_url} timed out"))?
-        .with_context(|| format!("CDP websocket connect to {ws_url}"))?;
+        let (ws, _) = tokio::time::timeout(bound, tokio_tungstenite::connect_async(ws_url))
+            .await
+            .map_err(|_| anyhow::anyhow!("CDP websocket connect to {ws_url} timed out"))?
+            .with_context(|| format!("CDP websocket connect to {ws_url}"))?;
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let (event_tx, _) = broadcast::channel::<Value>(512);
-        let pending: Arc<Mutex<HashMap<u64, Responder>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, Responder>>> = Arc::new(Mutex::new(HashMap::new()));
         let pending_pump = Arc::clone(&pending);
         let event_tx_pump = event_tx.clone();
         let closed = Arc::new(AtomicBool::new(false));
@@ -130,15 +124,12 @@ impl CdpClient {
     /// Connect over `--remote-debugging-pipe` fds: NUL-terminated JSON
     /// messages, one writer task and one reader task.
     #[cfg(unix)]
-    pub async fn connect_pipe(
-        from_browser: std::os::fd::OwnedFd,
-        to_browser: std::os::fd::OwnedFd,
-    ) -> Result<Self> {
+    pub async fn connect_pipe(from_browser: std::os::fd::OwnedFd, to_browser: std::os::fd::OwnedFd) -> Result<Self> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut reader = tokio::net::unix::pipe::Receiver::from_owned_fd(from_browser)
-            .context("CDP pipe (browser -> us)")?;
-        let mut writer = tokio::net::unix::pipe::Sender::from_owned_fd(to_browser)
-            .context("CDP pipe (us -> browser)")?;
+        let mut reader =
+            tokio::net::unix::pipe::Receiver::from_owned_fd(from_browser).context("CDP pipe (browser -> us)")?;
+        let mut writer =
+            tokio::net::unix::pipe::Sender::from_owned_fd(to_browser).context("CDP pipe (us -> browser)")?;
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let (event_tx, _) = broadcast::channel::<Value>(512);
         let pending: Arc<Mutex<HashMap<u64, Responder>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -248,11 +239,7 @@ impl CdpClient {
     }
 
     /// Wait for the first event matching `pred`.
-    pub async fn wait_event(
-        &self,
-        mut pred: impl FnMut(&Value) -> bool,
-        timeout: Duration,
-    ) -> Result<Value> {
+    pub async fn wait_event(&self, mut pred: impl FnMut(&Value) -> bool, timeout: Duration) -> Result<Value> {
         let mut rx = self.subscribe();
         tokio::time::timeout(timeout, async {
             loop {
@@ -289,12 +276,7 @@ fn trace(method: &str, params: &Value) {
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| {
         let path = std::env::var_os("NAVIGERA_CDP_TRACE")?;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()
-            .map(Mutex::new)
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
     });
     let Some(file) = file else { return };
     // One write() per line: several navigera processes append to the
@@ -310,17 +292,13 @@ fn trace(method: &str, params: &Value) {
 /// strings kept verbatim (enum candidates), everything else as a type tag.
 fn shape(value: &Value, depth: usize) -> Value {
     match value {
-        Value::Object(map) if depth < 4 => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), shape(v, depth + 1)))
-                .collect(),
-        ),
+        Value::Object(map) if depth < 4 => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v, depth + 1))).collect())
+        }
         Value::Array(items) if depth < 4 => {
             Value::Array(items.first().map(|v| shape(v, depth + 1)).into_iter().collect())
         }
-        Value::String(s) if s.len() <= 40 && !s.contains(char::is_whitespace) => {
-            Value::String(s.clone())
-        }
+        Value::String(s) if s.len() <= 40 && !s.contains(char::is_whitespace) => Value::String(s.clone()),
         Value::String(_) => Value::String("<string>".into()),
         Value::Number(_) => Value::String("<number>".into()),
         Value::Bool(_) => Value::String("<boolean>".into()),
@@ -330,11 +308,7 @@ fn shape(value: &Value, depth: usize) -> Value {
     }
 }
 
-fn dispatch(
-    text: &str,
-    pending: &Mutex<HashMap<u64, Responder>>,
-    events: &broadcast::Sender<Value>,
-) {
+fn dispatch(text: &str, pending: &Mutex<HashMap<u64, Responder>>, events: &broadcast::Sender<Value>) {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return;
     };

@@ -23,7 +23,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
-          components: clippy
+          components: clippy, rustfmt
+
+      - name: Format
+        run: cargo fmt --check
 
       - name: Tests (unit + browser e2e on the runner's Chrome, CDP traced)
         env:
@@ -56,9 +59,21 @@ jobs:
       - name: Harness syntax check
         run: |
           python3 -m py_compile bench/ladder/*.py bench/ladder/contenders/*.py \
-            bench/site/server.py tests/fixtures/*.py tools/*.py bench/agent-eval/*.py
+            bench/site/server.py tests/fixtures/*.py tools/*.py bench/agent-eval/*.py packaging/*.py
           node --check bench/ladder/contenders/contender_playwright.mjs
           node --check bench/ladder/contenders/contender_puppeteer.mjs
+
+  # The oldest Rust that builds navigera (rust-version in Cargo.toml).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo check --locked --all-targets
 
   # Windows: the same unit + e2e tests on the runner's Chrome, through the
   # Windows code paths (WebSocket CDP, loopback-TCP sessions with a token,

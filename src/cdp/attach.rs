@@ -151,9 +151,8 @@ pub fn resolve(spec: &str) -> Result<String> {
         Some(dir) => (dir, format!("{spec}'s default profile")),
         None => (PathBuf::from(spec), format!("user data directory {spec}")),
     };
-    let (port, path) = read_active_port(&dir).map_err(|e| {
-        anyhow::anyhow!("--attach {spec}: {e:#}. For {what}: {ENABLE_HINT}")
-    })?;
+    let (port, path) =
+        read_active_port(&dir).map_err(|e| anyhow::anyhow!("--attach {spec}: {e:#}. For {what}: {ENABLE_HINT}"))?;
     if path.is_empty() {
         bail!("--attach {spec}: {} has no endpoint path", dir.join("DevToolsActivePort").display());
     }
@@ -195,8 +194,8 @@ pub fn ensure_profile_browser(exe: &str, dir: &Path, headless: bool) -> Result<S
         cmd.args(extra.split_whitespace());
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    let mut child = crate::proc::spawn_detached(&mut cmd)
-        .with_context(|| format!("start {exe} for profile {}", dir.display()))?;
+    let mut child =
+        crate::proc::spawn_detached(&mut cmd).with_context(|| format!("start {exe} for profile {}", dir.display()))?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(url) = live_endpoint(dir) {

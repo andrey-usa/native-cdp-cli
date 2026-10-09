@@ -29,16 +29,39 @@ use serde_json::Value;
 
 /// Roles an agent can act on; always get a ref.
 pub const INTERACTIVE: &[&str] = &[
-    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
-    "listbox", "option", "menuitem", "menuitemcheckbox", "menuitemradio", "tab",
-    "switch", "slider", "spinbutton", "treeitem", "DisclosureTriangle",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "listbox",
+    "option",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "tab",
+    "switch",
+    "slider",
+    "spinbutton",
+    "treeitem",
+    "DisclosureTriangle",
 ];
 
 /// Roles that only wrap other nodes: collapsed (children promoted) unless
 /// they are focusable or carry a name of their own.
 const WRAPPERS: &[&str] = &[
-    "generic", "none", "presentation", "LabelText", "LayoutTable", "LayoutTableRow",
-    "LayoutTableCell", "Section", "Div", "Pre",
+    "generic",
+    "none",
+    "presentation",
+    "LabelText",
+    "LayoutTable",
+    "LayoutTableRow",
+    "LayoutTableCell",
+    "Section",
+    "Div",
+    "Pre",
 ];
 
 /// Roles never printed (their text is carried by the parent).
@@ -133,11 +156,7 @@ impl<'a> Tree<'a> {
         let mut out: Vec<&'a Value> = node
             .get("childIds")
             .and_then(Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| id.as_str().and_then(|id| self.by_id.get(id).copied()))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| id.as_str().and_then(|id| self.by_id.get(id).copied())).collect())
             .unwrap_or_default();
         // An <iframe>'s document lives in another frame's tree.
         if let Some(backend) = node.get("backendDOMNodeId").and_then(Value::as_u64) {
@@ -160,16 +179,12 @@ impl<'a> Tree<'a> {
         if role == "RootWebArea" && !self.is_frame_root(node) {
             return true;
         }
-        WRAPPERS.contains(&role)
-            && text_of(node, "name").is_empty()
-            && !truthy(prop(node, "focusable"))
+        WRAPPERS.contains(&role) && text_of(node, "name").is_empty() && !truthy(prop(node, "focusable"))
     }
 
     fn is_frame_root(&self, node: &Value) -> bool {
         // Child-frame documents are rendered as `- document "Title":`.
-        node.get("nodeId")
-            .and_then(Value::as_str)
-            .is_some_and(|id| self.frame_root_ids.contains(id))
+        node.get("nodeId").and_then(Value::as_str).is_some_and(|id| self.frame_root_ids.contains(id))
     }
 
     /// Children with transparent wrappers expanded in place.
@@ -338,8 +353,12 @@ impl<'a> Tree<'a> {
             }
         }
         let has_ref = line.contains("ref=");
-        if kids.is_empty() && name.is_empty() && !has_ref && value.is_empty()
-            && !INTERACTIVE.contains(&role.as_str()) && role != "Iframe"
+        if kids.is_empty()
+            && name.is_empty()
+            && !has_ref
+            && value.is_empty()
+            && !INTERACTIVE.contains(&role.as_str())
+            && role != "Iframe"
         {
             return; // an empty live region / paragraph says nothing
         }
@@ -429,13 +448,7 @@ pub fn render(header: &str, nodes: &[Value], frames: &[Frame], opts: &Options) -
             }
         }
     }
-    let mut tree = Tree {
-        by_id,
-        frame_root_ids,
-        frames: frame_roots,
-        opts,
-        lines: Vec::new(),
-    };
+    let mut tree = Tree { by_id, frame_root_ids, frames: frame_roots, opts, lines: Vec::new() };
     if !header.is_empty() {
         tree.lines.push(header.to_string());
     }
@@ -461,15 +474,9 @@ pub fn render(header: &str, nodes: &[Value], frames: &[Frame], opts: &Options) -
     if opts.limit > 0 && total > opts.limit {
         truncated = total - opts.limit;
         lines.truncate(opts.limit);
-        lines.push(format!(
-            "… {truncated} more lines (scope with `ax --selector <css>`, or raise `--limit`)"
-        ));
+        lines.push(format!("… {truncated} more lines (scope with `ax --selector <css>`, or raise `--limit`)"));
     }
-    Rendered {
-        lines: lines.len(),
-        text: lines.join("\n"),
-        truncated,
-    }
+    Rendered { lines: lines.len(), text: lines.join("\n"), truncated }
 }
 
 #[cfg(test)]
@@ -503,10 +510,7 @@ mod tests {
             node("7", Some("6"), "StaticText", "Add to cart", &[], 7),
         ];
         let out = render("page \"Shop\"", &nodes, &[], &Options::default());
-        assert_eq!(
-            out.text,
-            "page \"Shop\"\n- heading \"Widget\"\n- button \"Add to cart\" [ref=6]"
-        );
+        assert_eq!(out.text, "page \"Shop\"\n- heading \"Widget\"\n- button \"Add to cart\" [ref=6]");
     }
 
     #[test]

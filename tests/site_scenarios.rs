@@ -23,7 +23,11 @@ fn tool_exe() -> String {
 
 /// The fixture servers are Python; Windows installs it as `python`.
 fn python() -> &'static str {
-    if cfg!(windows) { "python" } else { "python3" }
+    if cfg!(windows) {
+        "python"
+    } else {
+        "python3"
+    }
 }
 
 /// True when the tool itself would find a browser to launch (same resolver
@@ -91,7 +95,14 @@ const EVENT_LOG_JS: &str = "() => { window.__nvEvents = []; \
     return true }";
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..s.char_indices().take_while(|(i, _)| *i < n).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0)]) }
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!(
+            "{}…",
+            &s[..s.char_indices().take_while(|(i, _)| *i < n).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0)]
+        )
+    }
 }
 
 impl Agent {
@@ -152,24 +163,16 @@ impl Agent {
 
 impl Drop for Agent {
     fn drop(&mut self) {
-        let _ = Command::new(tool_exe())
-            .args(["--session", &self.session, "quit"])
-            .stdin(Stdio::null())
-            .output();
+        let _ = Command::new(tool_exe()).args(["--session", &self.session, "quit"]).stdin(Stdio::null()).output();
     }
 }
 
 /// `[ref=N]` on the first `ax` line containing `needle`.
 fn find_ref(ax: &str, needle: &str) -> String {
-    let line = ax
-        .lines()
-        .find(|l| l.contains(needle))
-        .unwrap_or_else(|| panic!("no line with {needle:?} in ax:\n{ax}"));
+    let line =
+        ax.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no line with {needle:?} in ax:\n{ax}"));
     let start = line.find("ref=").unwrap_or_else(|| panic!("no ref on {line:?}")) + 4;
-    line[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect()
+    line[start..].chars().take_while(char::is_ascii_digit).collect()
 }
 
 fn server_state(base: &str) -> Value {
@@ -198,10 +201,7 @@ fn acme_supply_shopping_docs_login_support() {
     let base = site.base.clone();
     let url = |path: &str| format!("{base}{path}");
     let agent = Agent {
-        session: std::env::temp_dir()
-            .join(format!("nv-site-{}.sock", std::process::id()))
-            .display()
-            .to_string(),
+        session: std::env::temp_dir().join(format!("nv-site-{}.sock", std::process::id())).display().to_string(),
         history: std::cell::RefCell::new(Some(Vec::new())),
     };
     agent.ok(&["start", "--idle-timeout-s", "300"]);
@@ -290,10 +290,7 @@ fn acme_supply_shopping_docs_login_support() {
     agent.ok(&["fill", &find_ref(&pay, "textbox \"CVC\""), "123"]);
     let placed = agent.run(&["click", "--text", "Place order"]);
     assert_eq!(placed["ok"], true, "{placed}");
-    assert!(
-        placed["dialogs"][0]["message"].as_str().unwrap_or("").starts_with("Place order for $"),
-        "{placed}"
-    );
+    assert!(placed["dialogs"][0]["message"].as_str().unwrap_or("").starts_with("Place order for $"), "{placed}");
     let state = agent.ok(&["wait", "--url", "/orders/"]);
     assert!(state["title"].as_str().unwrap().contains("Order placed"), "{state}");
     let st = server_state(&base);

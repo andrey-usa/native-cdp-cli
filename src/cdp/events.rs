@@ -35,10 +35,7 @@ impl Default for DialogPolicy {
     fn default() -> Self {
         // An agent that clicked "Delete" or "Place order" meant it; accepting
         // keeps flows moving. Every dialog is reported in the next response.
-        DialogPolicy {
-            accept: true,
-            prompt_text: None,
-        }
+        DialogPolicy { accept: true, prompt_text: None }
     }
 }
 
@@ -92,10 +89,7 @@ pub struct Shared {
 
 impl Shared {
     pub fn register(&self, session_id: &str, target_id: &str) {
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), target_id.to_string());
+        self.sessions.lock().unwrap().insert(session_id.to_string(), target_id.to_string());
     }
 
     pub fn unregister(&self, session_id: &str) {
@@ -143,12 +137,7 @@ impl Shared {
     }
 
     pub fn nav_state(&self, session_id: &str) -> NavState {
-        self.nav
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned()
-            .unwrap_or_default()
+        self.nav.lock().unwrap().get(session_id).cloned().unwrap_or_default()
     }
 
     /// Mark a navigation we started ourselves as in flight, so ops issued
@@ -205,9 +194,10 @@ fn on_event(client: &CdpClient, shared: &Shared, event: &Value) {
             if accept && kind == "prompt" {
                 // Without `dialog --prompt-text`, accept with the page's own
                 // default value, as pressing OK would.
-                let text = policy.prompt_text.clone().unwrap_or_else(|| {
-                    params.get("defaultPrompt").and_then(Value::as_str).unwrap_or("").to_string()
-                });
+                let text = policy
+                    .prompt_text
+                    .clone()
+                    .unwrap_or_else(|| params.get("defaultPrompt").and_then(Value::as_str).unwrap_or("").to_string());
                 answer["promptText"] = json!(text);
             }
             shared.dialogs.lock().unwrap().push(json!({
@@ -266,8 +256,12 @@ fn on_event(client: &CdpClient, shared: &Shared, event: &Value) {
                 shared.destroyed.lock().unwrap().push(id.to_string());
             }
         }
-        "Page.frameStartedLoading" | "Page.frameStoppedLoading" | "Page.domContentEventFired"
-        | "Page.frameRequestedNavigation" | "Page.navigatedWithinDocument" | "Page.frameNavigated" => {
+        "Page.frameStartedLoading"
+        | "Page.frameStoppedLoading"
+        | "Page.domContentEventFired"
+        | "Page.frameRequestedNavigation"
+        | "Page.navigatedWithinDocument"
+        | "Page.frameNavigated" => {
             if session.is_empty() {
                 return;
             }
@@ -275,10 +269,8 @@ fn on_event(client: &CdpClient, shared: &Shared, event: &Value) {
             let Some(main_frame) = main_frame else { return };
             // domContentEventFired is page-level (main frame) and has no
             // frameId; frameNavigated carries the frame object.
-            let frame = params
-                .get("frameId")
-                .or_else(|| params.get("frame").and_then(|f| f.get("id")))
-                .and_then(Value::as_str);
+            let frame =
+                params.get("frameId").or_else(|| params.get("frame").and_then(|f| f.get("id"))).and_then(Value::as_str);
             if let Some(frame) = frame {
                 if frame != main_frame {
                     return;

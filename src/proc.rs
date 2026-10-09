@@ -36,7 +36,5 @@ pub fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::p
         }
     }
     let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    cmd.creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
-        .spawn()
-        .or_else(|_| cmd.creation_flags(flags).spawn())
+    cmd.creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB).spawn().or_else(|_| cmd.creation_flags(flags).spawn())
 }

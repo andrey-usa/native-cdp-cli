@@ -97,10 +97,8 @@ mod endpoint {
     /// RNG, so SipHash under them is unpredictable to anyone else.
     fn random_token() -> String {
         use std::hash::{BuildHasher, Hasher};
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         (0..2u64)
             .map(|i| {
                 let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -164,10 +162,7 @@ pub fn env_session() -> Option<String> {
 }
 
 fn now_s() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn print_json(output: &mut dyn Write, value: &Value, config: &SessionConfig) {
@@ -179,10 +174,7 @@ fn print_json(output: &mut dyn Write, value: &Value, config: &SessionConfig) {
 pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
     let path = socket_path(name);
     if connect(&path).is_ok() {
-        eprintln!(
-            "navigera: a session is already listening on {}",
-            path.display()
-        );
+        eprintln!("navigera: a session is already listening on {}", path.display());
         return ExitCode::from(1);
     }
     // A socket file nobody answers on is left over from a crashed server.
@@ -203,11 +195,7 @@ pub fn serve_socket(config: &SessionConfig, name: &str) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    eprintln!(
-        "navigera: session listening on {} ({})",
-        path.display(),
-        driver.session().endpoint()
-    );
+    eprintln!("navigera: session listening on {} ({})", path.display(), driver.session().endpoint());
 
     let last_activity = Arc::new(AtomicU64::new(now_s()));
     if config.idle_timeout_s > 0 {
@@ -242,9 +230,7 @@ fn serve_connection(driver: &mut Driver, stream: Stream, last: &AtomicU64) -> bo
         let Some((responses, is_quit)) = protocol::handle_line(driver, &raw) else {
             continue;
         };
-        let written = responses
-            .iter()
-            .try_for_each(|response| protocol::write_response(&mut writer, response, false));
+        let written = responses.iter().try_for_each(|response| protocol::write_response(&mut writer, response, false));
         last.store(now_s(), Ordering::Relaxed);
         if is_quit {
             return true;
@@ -276,12 +262,7 @@ fn spawn_idle_watchdog(path: PathBuf, last: Arc<AtomicU64>, idle_s: u64) {
 }
 
 /// Client: send one command to the session server and print its response.
-pub fn client(
-    config: &SessionConfig,
-    name: &str,
-    command: &Command,
-    output: &mut dyn Write,
-) -> ExitCode {
+pub fn client(config: &SessionConfig, name: &str, command: &Command, output: &mut dyn Write) -> ExitCode {
     let path = socket_path(name);
     let stream = match connect(&path) {
         Ok(stream) => stream,
@@ -297,22 +278,14 @@ pub fn client(
             if !tail.is_empty() {
                 error.push_str(&format!("\nlast lines of {}:\n{tail}", log_path.display()));
             }
-            print_json(
-                output,
-                &json!({ "id": null, "ok": false, "error": error }),
-                config,
-            );
+            print_json(output, &json!({ "id": null, "ok": false, "error": error }), config);
             return ExitCode::from(1);
         }
     };
     let mut request = match serde_json::to_value(command) {
         Ok(value) => value,
         Err(e) => {
-            print_json(
-                output,
-                &json!({ "id": null, "ok": false, "error": format!("encode command: {e}") }),
-                config,
-            );
+            print_json(output, &json!({ "id": null, "ok": false, "error": format!("encode command: {e}") }), config);
             return ExitCode::from(1);
         }
     };
@@ -320,16 +293,8 @@ pub fn client(
     localize_request(&mut request, config);
     let mut writer = &stream;
     // One write: on Windows (TCP) a split line would wait out Nagle.
-    if writer
-        .write_all(format!("{request}\n").as_bytes())
-        .and_then(|_| writer.flush())
-        .is_err()
-    {
-        print_json(
-            output,
-            &json!({ "id": null, "ok": false, "error": "session closed the connection" }),
-            config,
-        );
+    if writer.write_all(format!("{request}\n").as_bytes()).and_then(|_| writer.flush()).is_err() {
+        print_json(output, &json!({ "id": null, "ok": false, "error": "session closed the connection" }), config);
         return ExitCode::from(1);
     }
     // Done sending: the server sees EOF after answering and takes the next
@@ -369,7 +334,11 @@ fn localize_request(request: &mut Value, config: &SessionConfig) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let absolute = |p: &str| -> String {
         let path = std::path::Path::new(p);
-        if path.is_absolute() { p.to_string() } else { cwd.join(path).display().to_string() }
+        if path.is_absolute() {
+            p.to_string()
+        } else {
+            cwd.join(path).display().to_string()
+        }
     };
     match request.get("op").and_then(Value::as_str) {
         Some("upload") => {
@@ -384,10 +353,10 @@ fn localize_request(request: &mut Value, config: &SessionConfig) {
         Some("screenshot") => {
             let path = match request.get("path").and_then(Value::as_str) {
                 Some(p) => absolute(p),
-                None => absolute(&format!("shot-{}.png", SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0))),
+                None => absolute(&format!(
+                    "shot-{}.png",
+                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+                )),
             };
             request["path"] = json!(path);
         }
@@ -406,11 +375,7 @@ fn log_tail(path: &std::path::Path, n: usize) -> String {
 }
 
 fn fail(output: &mut dyn Write, config: &SessionConfig, error: String) -> ExitCode {
-    print_json(
-        output,
-        &json!({ "id": null, "ok": false, "error": error }),
-        config,
-    );
+    print_json(output, &json!({ "id": null, "ok": false, "error": error }), config);
     ExitCode::from(1)
 }
 
@@ -465,10 +430,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
     if config.headless {
         cmd.arg("--headless");
     }
-    cmd.arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(log));
+    cmd.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
     let mut child = match crate::proc::spawn_detached(&mut cmd) {
         Ok(child) => child,
         Err(e) => return fail(output, config, format!("spawn session server: {e}")),
@@ -493,11 +455,7 @@ pub fn start(config: &SessionConfig, name: &str, output: &mut dyn Write) -> Exit
         }
         if let Ok(Some(status)) = child.try_wait() {
             let tail = log_tail(&log_path, 20);
-            return fail(
-                output,
-                config,
-                format!("session server exited during startup ({status}):\n{tail}"),
-            );
+            return fail(output, config, format!("session server exited during startup ({status}):\n{tail}"));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();

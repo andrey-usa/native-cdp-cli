@@ -10,13 +10,13 @@ Your own browser: `navigera -s me start --attach` connects to the user's running
 
 ## Docs
 
-- [Agent skill (usage guide)](https://raw.githubusercontent.com/andrey-usa/navigera/master/.claude/skills/navigera/SKILL.md): the loop, reading `ax`, every command, error recovery
+- [Agent skill (usage guide)](https://raw.githubusercontent.com/andrey-usa/navigera/master/skills/navigera/SKILL.md): the loop, reading `ax`, every command, error recovery
 - [Command and protocol reference](https://raw.githubusercontent.com/andrey-usa/navigera/master/docs/navigera.md): CLI flags, JSON-lines serve protocol, sessions, engines
 - [README](https://raw.githubusercontent.com/andrey-usa/navigera/master/README.md): install, supported browsers, benchmarks, agent eval
 
 ## Working on the code
 
-- [AGENTS.md](https://raw.githubusercontent.com/andrey-usa/navigera/master/AGENTS.md): rules and the fast loop for agents changing this repo (CI via annotations, offline builds, A/B benchmarks)
+- [CONTRIBUTING.md](https://raw.githubusercontent.com/andrey-usa/navigera/master/CONTRIBUTING.md): build, tests, CI annotations, offline builds, A/B benchmarks, releasing
 
 ## Optional
 

@@ -37,7 +37,7 @@ pub const DEFAULT_AX_LIMIT: usize = 2000;
 
 /// The skill shipped inside the binary (`navigera skill`,
 /// `navigera install-skill`), so docs always match the binary version.
-pub const SKILL_MD: &str = include_str!("../.claude/skills/navigera/SKILL.md");
+pub const SKILL_MD: &str = include_str!("../skills/navigera/SKILL.md");
 
 /// Accepts a ref as a number or as `"12"`, `"@12"`, `"ref=12"`, `"e12"`
 /// (the forms other agent tools print).
@@ -45,10 +45,9 @@ fn de_ref<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     let v = Option::<Value>::deserialize(d)?;
     match v {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("ref must be a positive integer")),
+        Some(Value::Number(n)) => {
+            n.as_u64().map(Some).ok_or_else(|| serde::de::Error::custom("ref must be a positive integer"))
+        }
         Some(Value::String(s)) => parse_ref(&s)
             .map(Some)
             .ok_or_else(|| serde::de::Error::custom(format!("bad ref {s:?}; use the number from [ref=N]"))),
@@ -95,15 +94,16 @@ pub struct TargetArgs {
 
 impl TargetArgs {
     fn target(&self, op: &str) -> anyhow::Result<Target> {
-        self.optional(op)?
-            .ok_or_else(|| anyhow::anyhow!("{op} needs a target: a ref from `ax` (`{op} 12`), --selector <css> or --text <visible text>"))
+        self.optional(op)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{op} needs a target: a ref from `ax` (`{op} 12`), --selector <css> or --text <visible text>"
+            )
+        })
     }
 
     fn optional(&self, op: &str) -> anyhow::Result<Option<Target>> {
-        let given = [self.selector.is_some(), self.node_ref.is_some(), self.text.is_some()]
-            .iter()
-            .filter(|b| **b)
-            .count();
+        let given =
+            [self.selector.is_some(), self.node_ref.is_some(), self.text.is_some()].iter().filter(|b| **b).count();
         if given > 1 {
             anyhow::bail!("{op}: give only one of ref, --selector, --text");
         }
@@ -465,7 +465,9 @@ pub enum Local {
     /// Print the embedded SKILL.md.
     Skill,
     /// Write SKILL.md to `<dir>/navigera/SKILL.md`.
-    InstallSkill { dir: String },
+    InstallSkill {
+        dir: String,
+    },
     Version,
 }
 
@@ -559,13 +561,30 @@ pub fn op_help(program: &str, op: &str) -> Option<String> {
 /// Nearest known command for a typo, plus aliases other agent CLIs use.
 fn suggest(op: &str) -> Option<&'static str> {
     let aliases: &[(&str, &str)] = &[
-        ("open-url", "goto"), ("visit", "goto"), ("go", "goto"),
-        ("evaluate", "eval"), ("js", "eval"), ("exec", "eval"),
-        ("key", "press"), ("keypress", "press"), ("check", "click"), ("tap", "click"),
-        ("dblclick", "click"), ("input", "fill"), ("clear", "fill"),
-        ("tabs", "tab-list"), ("tab", "tab-list"), ("exit", "quit"), ("stop", "quit"),
-        ("tree", "ax"), ("a11y", "ax"), ("accessibility", "ax"), ("refresh", "reload"),
-        ("sleep", "wait"), ("waitfor", "wait"), ("shot", "screenshot"),
+        ("open-url", "goto"),
+        ("visit", "goto"),
+        ("go", "goto"),
+        ("evaluate", "eval"),
+        ("js", "eval"),
+        ("exec", "eval"),
+        ("key", "press"),
+        ("keypress", "press"),
+        ("check", "click"),
+        ("tap", "click"),
+        ("dblclick", "click"),
+        ("input", "fill"),
+        ("clear", "fill"),
+        ("tabs", "tab-list"),
+        ("tab", "tab-list"),
+        ("exit", "quit"),
+        ("stop", "quit"),
+        ("tree", "ax"),
+        ("a11y", "ax"),
+        ("accessibility", "ax"),
+        ("refresh", "reload"),
+        ("sleep", "wait"),
+        ("waitfor", "wait"),
+        ("shot", "screenshot"),
     ];
     if let Some((_, to)) = aliases.iter().find(|(a, _)| a.eq_ignore_ascii_case(op)) {
         return Some(to);
@@ -593,8 +612,7 @@ fn suggest(op: &str) -> Option<&'static str> {
 }
 
 fn next_value(args: &mut std::collections::VecDeque<String>, flag: &str) -> Result<String, String> {
-    args.pop_front()
-        .ok_or_else(|| format!("missing value after {flag}"))
+    args.pop_front().ok_or_else(|| format!("missing value after {flag}"))
 }
 
 /// Why [`parse_args`] failed: `Help` is a deliberate `--help` (exit 0),
@@ -608,20 +626,15 @@ pub enum ArgsError {
 }
 
 fn parse_f64(raw: &str, flag: &str) -> Result<f64, String> {
-    raw.parse::<f64>()
-        .map_err(|_| format!("{flag} must be a number, got {raw:?}"))
+    raw.parse::<f64>().map_err(|_| format!("{flag} must be a number, got {raw:?}"))
 }
 
 fn parse_index(raw: &str) -> Result<usize, String> {
-    raw.parse::<usize>()
-        .map_err(|_| format!("tab index must be a number, got {raw:?}"))
+    raw.parse::<usize>().map_err(|_| format!("tab index must be a number, got {raw:?}"))
 }
 
 /// Scan every `--flag value` (or `--flag=value`) out of the remaining argv.
-fn extract_values(
-    args: &mut std::collections::VecDeque<String>,
-    flag: &str,
-) -> Result<Vec<String>, String> {
+fn extract_values(args: &mut std::collections::VecDeque<String>, flag: &str) -> Result<Vec<String>, String> {
     let mut values = Vec::new();
     let mut rest = std::collections::VecDeque::new();
     let with_eq = format!("{flag}=");
@@ -639,10 +652,7 @@ fn extract_values(
 }
 
 /// Scan one `--flag value` out of the remaining argv (errors on duplicates).
-fn extract_value(
-    args: &mut std::collections::VecDeque<String>,
-    flag: &str,
-) -> Result<Option<String>, String> {
+fn extract_value(args: &mut std::collections::VecDeque<String>, flag: &str) -> Result<Option<String>, String> {
     let mut values = extract_values(args, flag)?;
     if values.len() > 1 {
         return Err(format!("duplicate {flag}"));
@@ -658,10 +668,7 @@ fn extract_present(args: &mut std::collections::VecDeque<String>, flag: &str) ->
 }
 
 /// Global flags may appear before *or* after the command (`eval … --pretty`).
-fn consume_globals(
-    args: &mut std::collections::VecDeque<String>,
-    config: &mut SessionConfig,
-) -> Result<(), String> {
+fn consume_globals(args: &mut std::collections::VecDeque<String>, config: &mut SessionConfig) -> Result<(), String> {
     if let Some(raw) = extract_value(args, "--engine")? {
         config.engine = raw;
     }
@@ -684,9 +691,8 @@ fn consume_globals(
         config.session = Some(name);
     }
     if let Some(raw) = extract_value(args, "--idle-timeout-s")? {
-        config.idle_timeout_s = raw
-            .parse::<u64>()
-            .map_err(|_| format!("--idle-timeout-s must be whole seconds, got {raw:?}"))?;
+        config.idle_timeout_s =
+            raw.parse::<u64>().map_err(|_| format!("--idle-timeout-s must be whole seconds, got {raw:?}"))?;
     }
     if let Some(spec) = extract_attach(args)? {
         config.attach = Some(spec);
@@ -764,10 +770,8 @@ fn positional(args: &mut Args) -> Option<String> {
 pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs, ArgsError> {
     let mut argv = argv.into_iter();
     let program = argv.next().unwrap_or_else(|| "navigera".to_string());
-    let program = std::path::Path::new(&program)
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or(program);
+    let program =
+        std::path::Path::new(&program).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(program);
     let mut args: Args = argv.collect();
     let mut config = SessionConfig::default();
 
@@ -812,9 +816,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
             "--headless" => config.headless = true,
             "--idle-timeout-s" => {
                 let raw = value("--idle-timeout-s")?;
-                config.idle_timeout_s = raw.parse::<u64>().map_err(|_| {
-                    ArgsError::Invalid(format!("--idle-timeout-s must be whole seconds, got {raw:?}"))
-                })?;
+                config.idle_timeout_s = raw
+                    .parse::<u64>()
+                    .map_err(|_| ArgsError::Invalid(format!("--idle-timeout-s must be whole seconds, got {raw:?}")))?;
             }
             "-V" | "--version" => {
                 return Ok(ParsedArgs { config, command: None, start: false, local: Some(Local::Version) })
@@ -878,7 +882,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
     }
 
     let timeout_ms = num_flag(&mut args, "--timeout-ms")?;
-    let need = |name: &str, what: &str| ArgsError::Invalid(format!("{op} needs {what}; usage: {}", op_help(&program, name).unwrap_or_default()));
+    let need = |name: &str, what: &str| {
+        ArgsError::Invalid(format!("{op} needs {what}; usage: {}", op_help(&program, name).unwrap_or_default()))
+    };
     let command = match op.as_str() {
         "open" => Command::Open {
             url: match str_flag(&mut args, "--url")? {
@@ -903,7 +909,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
             let target = target_args(&mut args, true)?;
             let value = match str_flag(&mut args, "--value")? {
                 Some(v) => v,
-                None => positional(&mut args).ok_or_else(|| need("fill", "a value (`fill <ref> <value>` or --value)"))?,
+                None => {
+                    positional(&mut args).ok_or_else(|| need("fill", "a value (`fill <ref> <value>` or --value)"))?
+                }
             };
             Command::Fill { target, value, timeout_ms }
         }
@@ -965,7 +973,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
                     Err(_) => *selector = Some(p),
                 }
             }
-            if matches!(&cmd, Command::Wait { selector: None, text: None, url: None, gone: None, js: None, ms: None, .. }) {
+            if matches!(
+                &cmd,
+                Command::Wait { selector: None, text: None, url: None, gone: None, js: None, ms: None, .. }
+            ) {
                 return Err(need("wait", "a condition"));
             }
             cmd
@@ -1055,9 +1066,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<ParsedArgs,
             full_page: extract_present(&mut args, "--full-page").then_some(true),
         },
         unknown => {
-            let hint = suggest(unknown)
-                .map(|s| format!(" — did you mean `{s}`?"))
-                .unwrap_or_default();
+            let hint = suggest(unknown).map(|s| format!(" — did you mean `{s}`?")).unwrap_or_default();
             return invalid(format!(
                 "unknown command {unknown:?}{hint}\ncommands: {}\n(`{program} --help` for usage)",
                 OPS.iter().map(|(n, ..)| *n).collect::<Vec<_>>().join(", ")
@@ -1115,11 +1124,7 @@ impl Driver {
             config.transport.as_deref(),
         )
         .map_err(|e| {
-            anyhow::anyhow!(
-                "browser launch failed (engine={}, headed={}): {e:#}",
-                config.engine,
-                config.headed
-            )
+            anyhow::anyhow!("browser launch failed (engine={}, headed={}): {e:#}", config.engine, config.headed)
         })?;
         Ok(Self { session })
     }
@@ -1154,9 +1159,7 @@ impl Driver {
             .page_targets()
             .into_iter()
             .enumerate()
-            .map(|(index, target)| {
-                json!({ "index": index, "target": target, "active": index == active })
-            })
+            .map(|(index, target)| json!({ "index": index, "target": target, "active": index == active }))
             .collect();
         json!({ "tabs": tabs, "active": active, "url": self.session.url() })
     }
@@ -1176,9 +1179,17 @@ impl Driver {
         // page skip it.
         let reads_page = !matches!(
             command,
-            Command::Quit { .. } | Command::Dialog { .. } | Command::TabList {} | Command::TabNew { .. }
-                | Command::TabSelect { .. } | Command::TabClose { .. } | Command::ClosePage { .. }
-                | Command::Goto { .. } | Command::Open { .. } | Command::Reload {} | Command::Back {}
+            Command::Quit { .. }
+                | Command::Dialog { .. }
+                | Command::TabList {}
+                | Command::TabNew { .. }
+                | Command::TabSelect { .. }
+                | Command::TabClose { .. }
+                | Command::ClosePage { .. }
+                | Command::Goto { .. }
+                | Command::Open { .. }
+                | Command::Reload {}
+                | Command::Back {}
                 | Command::Forward {}
                 | Command::Wait { ms: Some(_), selector: None, text: None, url: None, gone: None, js: None, .. }
         );
@@ -1249,14 +1260,14 @@ impl Driver {
             }
             Command::Click { target, timeout_ms } => {
                 let t = target.target("click")?;
-                let point = s
-                    .click_target(&t, *timeout_ms)
-                    .map_err(|e| anyhow::anyhow!("click {}: {e:#}", t.label()))?;
+                let point =
+                    s.click_target(&t, *timeout_ms).map_err(|e| anyhow::anyhow!("click {}: {e:#}", t.label()))?;
                 let mut state = self.state_json();
                 if point.get("synthetic").and_then(Value::as_bool) == Some(true) {
                     // The agent should know the click was not a real one.
                     state["synthetic_click"] = json!(if point.get("dropped").and_then(Value::as_bool) == Some(true) {
-                        "the browser did not deliver the mouse events (twice); dispatched DOM events instead".to_string()
+                        "the browser did not deliver the mouse events (twice); dispatched DOM events instead"
+                            .to_string()
                     } else if point.get("covered").and_then(Value::as_bool) == Some(true) {
                         format!(
                             "element is covered by {}; dispatched DOM events instead (close the overlay if the click had no effect)",
@@ -1273,21 +1284,21 @@ impl Driver {
                 let point = s.hover(&t, *timeout_ms).map_err(|e| anyhow::anyhow!("hover {}: {e:#}", t.label()))?;
                 let mut state = self.state_json();
                 if point.get("synthetic").and_then(Value::as_bool) == Some(true) {
-                    state["synthetic_hover"] = json!("element is covered or has no box; sent DOM mouseover events only (CSS :hover will not apply)");
+                    state["synthetic_hover"] = json!(
+                        "element is covered or has no box; sent DOM mouseover events only (CSS :hover will not apply)"
+                    );
                 }
                 Ok(state)
             }
             Command::Fill { target, value, timeout_ms } => {
                 let t = target.target("fill")?;
-                s.fill_target(&t, value, *timeout_ms)
-                    .map_err(|e| anyhow::anyhow!("fill {}: {e:#}", t.label()))?;
+                s.fill_target(&t, value, *timeout_ms).map_err(|e| anyhow::anyhow!("fill {}: {e:#}", t.label()))?;
                 Ok(self.state_json())
             }
             Command::Select { target, value, timeout_ms } => {
                 let t = target.target("select")?;
-                let chosen = s
-                    .select(&t, value, *timeout_ms)
-                    .map_err(|e| anyhow::anyhow!("select {}: {e:#}", t.label()))?;
+                let chosen =
+                    s.select(&t, value, *timeout_ms).map_err(|e| anyhow::anyhow!("select {}: {e:#}", t.label()))?;
                 let mut state = self.state_json();
                 state["selected"] = chosen;
                 Ok(state)
@@ -1304,8 +1315,7 @@ impl Driver {
             }
             Command::Scroll { target, by, to, timeout_ms } => {
                 let t = target.optional("scroll")?;
-                s.scroll(t.as_ref(), *by, to.as_deref(), *timeout_ms)
-                    .map_err(|e| anyhow::anyhow!("scroll: {e:#}"))
+                s.scroll(t.as_ref(), *by, to.as_deref(), *timeout_ms).map_err(|e| anyhow::anyhow!("scroll: {e:#}"))
             }
             Command::Upload { target, files, timeout_ms } => {
                 let t = target.target("upload")?;
@@ -1318,7 +1328,8 @@ impl Driver {
                 }
                 let mut checks = Vec::new();
                 let mut what = Vec::new();
-                const VISIBLE: &str = "(el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden'";
+                const VISIBLE: &str =
+                    "(el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden'";
                 // Any match counts: a hidden template copy ahead of the
                 // visible element must not decide the wait.
                 if let Some(sel) = selector {
@@ -1361,9 +1372,8 @@ impl Driver {
                 Ok(json!(text))
             }
             Command::Eval { expression, timeout_ms } => {
-                let value: Value = s
-                    .evaluate_with_timeout(expression, *timeout_ms)
-                    .map_err(|e| anyhow::anyhow!("eval: {e:#}"))?;
+                let value: Value =
+                    s.evaluate_with_timeout(expression, *timeout_ms).map_err(|e| anyhow::anyhow!("eval: {e:#}"))?;
                 Ok(value)
             }
             Command::Title {} => {
@@ -1394,37 +1404,33 @@ impl Driver {
                     nodes.truncate(*n);
                 }
                 match tree {
-                    Value::String(text) if self.session.page_count() > 1 => Ok(Value::String(format!(
-                        "{} (tab {} of {})",
-                        text.lines().next().unwrap_or(""),
-                        self.session.active_page(),
-                        self.session.page_count()
-                    ) + &text[text.find('\n').unwrap_or(text.len())..])),
+                    Value::String(text) if self.session.page_count() > 1 => Ok(Value::String(
+                        format!(
+                            "{} (tab {} of {})",
+                            text.lines().next().unwrap_or(""),
+                            self.session.active_page(),
+                            self.session.page_count()
+                        ) + &text[text.find('\n').unwrap_or(text.len())..],
+                    )),
                     other => Ok(other),
                 }
             }
             Command::Url {} => Ok(self.state_json()),
             Command::TabList {} => Ok(self.tabs_json()),
             Command::TabNew { url } => {
-                self.session
-                    .new_page()
-                    .map_err(|e| anyhow::anyhow!("tab-new: {e:#}"))?;
+                self.session.new_page().map_err(|e| anyhow::anyhow!("tab-new: {e:#}"))?;
                 if let Some(url) = url {
                     self.goto(url, None, None)?;
                 }
                 Ok(self.tabs_json())
             }
             Command::TabSelect { index } => {
-                self.session
-                    .select_page(*index)
-                    .map_err(|e| anyhow::anyhow!("tab-select {index}: {e:#}"))?;
+                self.session.select_page(*index).map_err(|e| anyhow::anyhow!("tab-select {index}: {e:#}"))?;
                 Ok(self.state_json())
             }
             Command::TabClose { index } | Command::ClosePage { index } => {
                 let index = index.unwrap_or_else(|| self.session.active_page());
-                self.session
-                    .close_page(index)
-                    .map_err(|e| anyhow::anyhow!("tab-close {index}: {e:#}"))?;
+                self.session.close_page(index).map_err(|e| anyhow::anyhow!("tab-close {index}: {e:#}"))?;
                 Ok(self.state_json())
             }
             Command::Screenshot { path, full_page } => {
@@ -1437,11 +1443,9 @@ impl Driver {
                             .unwrap_or(0)
                     )
                 });
-                let bytes = s
-                    .screenshot_png(full_page.unwrap_or(false))
-                    .map_err(|e| anyhow::anyhow!("screenshot: {e:#}"))?;
-                std::fs::write(&path, &bytes)
-                    .map_err(|e| anyhow::anyhow!("screenshot: writing {path}: {e:#}"))?;
+                let bytes =
+                    s.screenshot_png(full_page.unwrap_or(false)).map_err(|e| anyhow::anyhow!("screenshot: {e:#}"))?;
+                std::fs::write(&path, &bytes).map_err(|e| anyhow::anyhow!("screenshot: writing {path}: {e:#}"))?;
                 // Report where it really went (a relative path is relative
                 // to this process, which may not be the caller's directory).
                 let path = std::path::absolute(&path).map(|p| p.display().to_string()).unwrap_or(path);
@@ -1477,13 +1481,11 @@ fn op_timeout_ms(command: &Command) -> Option<f64> {
 
 pub fn normalize_url(url: &str) -> String {
     let u = url.trim();
-    let has_scheme = u
-        .split_once(':')
-        .is_some_and(|(scheme, rest)| {
-            !scheme.is_empty()
-                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-                && !rest.chars().next().is_some_and(|c| c.is_ascii_digit())
-        });
+    let has_scheme = u.split_once(':').is_some_and(|(scheme, rest)| {
+        !scheme.is_empty()
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+            && !rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+    });
     if has_scheme {
         return u.to_string();
     }
@@ -1544,12 +1546,7 @@ fn handle_value(driver: &mut Driver, value: Value) -> (Response, bool) {
                 Err(e) => return (err_response(id, format!("bad command: {e}"), Instant::now()), false),
             }
         }
-        _ => {
-            return (
-                err_response(Value::Null, "each command must be a JSON object".into(), Instant::now()),
-                false,
-            )
-        }
+        _ => return (err_response(Value::Null, "each command must be a JSON object".into(), Instant::now()), false),
     };
     let started = Instant::now();
     let is_quit = matches!(command, Command::Quit { .. });
@@ -1567,17 +1564,9 @@ fn handle_value(driver: &mut Driver, value: Value) -> (Response, bool) {
     (response, is_quit)
 }
 
-pub(crate) fn write_response(
-    output: &mut dyn Write,
-    response: &Response,
-    pretty: bool,
-) -> io::Result<()> {
-    let line = if pretty {
-        serde_json::to_string_pretty(response)
-    } else {
-        serde_json::to_string(response)
-    }
-    .expect("response serializes");
+pub(crate) fn write_response(output: &mut dyn Write, response: &Response, pretty: bool) -> io::Result<()> {
+    let line = if pretty { serde_json::to_string_pretty(response) } else { serde_json::to_string(response) }
+        .expect("response serializes");
     writeln!(output, "{line}")?;
     output.flush()
 }
@@ -1588,12 +1577,8 @@ pub(crate) fn write_response(
 pub fn print_cli_response(output: &mut dyn Write, response: &Value, config: &SessionConfig) -> bool {
     let ok = response.get("ok").and_then(Value::as_bool).unwrap_or(false);
     if !config.raw {
-        let text = if config.pretty {
-            serde_json::to_string_pretty(response)
-        } else {
-            serde_json::to_string(response)
-        }
-        .unwrap_or_else(|_| response.to_string());
+        let text = if config.pretty { serde_json::to_string_pretty(response) } else { serde_json::to_string(response) }
+            .unwrap_or_else(|_| response.to_string());
         let _ = writeln!(output, "{text}");
         let _ = output.flush();
         return ok;
@@ -1607,7 +1592,11 @@ pub fn print_cli_response(output: &mut dyn Write, response: &Value, config: &Ses
         );
     }
     if let Some(tabs) = response.get("new_tabs").and_then(Value::as_array) {
-        eprintln!("note: the page opened {} new tab(s); now on tab {}", tabs.len(), tabs.last().unwrap_or(&Value::Null));
+        eprintln!(
+            "note: the page opened {} new tab(s); now on tab {}",
+            tabs.len(),
+            tabs.last().unwrap_or(&Value::Null)
+        );
     }
     if ok {
         match response.get("result") {
@@ -1615,19 +1604,20 @@ pub fn print_cli_response(output: &mut dyn Write, response: &Value, config: &Ses
                 let _ = writeln!(output, "{s}");
             }
             Some(other) => {
-                let _ = writeln!(output, "{}", if config.pretty {
-                    serde_json::to_string_pretty(other).unwrap_or_default()
-                } else {
-                    other.to_string()
-                });
+                let _ = writeln!(
+                    output,
+                    "{}",
+                    if config.pretty {
+                        serde_json::to_string_pretty(other).unwrap_or_default()
+                    } else {
+                        other.to_string()
+                    }
+                );
             }
             None => {}
         }
     } else {
-        eprintln!(
-            "error: {}",
-            response.get("error").and_then(Value::as_str).unwrap_or("unknown error")
-        );
+        eprintln!("error: {}", response.get("error").and_then(Value::as_str).unwrap_or("unknown error"));
     }
     let _ = output.flush();
     ok
@@ -1690,11 +1680,7 @@ fn peak_rss_kb() -> Option<u64> {
 ///
 /// Returns the process exit code (`0` after `quit` or EOF, `1` on launch /
 /// IO failure). Logs go to stderr so stdout stays protocol-clean.
-pub fn serve(
-    config: &SessionConfig,
-    input: &mut dyn BufRead,
-    output: &mut dyn Write,
-) -> ExitCode {
+pub fn serve(config: &SessionConfig, input: &mut dyn BufRead, output: &mut dyn Write) -> ExitCode {
     let mut driver = match Driver::launch(config) {
         Ok(driver) => driver,
         Err(e) => {
@@ -1748,11 +1734,7 @@ pub fn serve(
 }
 
 /// One-shot mode: launch the browser, run one command, close, write response.
-pub fn oneshot(
-    config: &SessionConfig,
-    command: &Command,
-    output: &mut dyn Write,
-) -> ExitCode {
+pub fn oneshot(config: &SessionConfig, command: &Command, output: &mut dyn Write) -> ExitCode {
     let started = Instant::now();
     if config.attach.is_some() || config.profile.is_some() {
         // Each one-shot command would open (and abandon) a window in the
@@ -1828,23 +1810,11 @@ mod tests {
 
     #[test]
     fn parses_one_shot_eval_with_trailing_global_flag() {
-        let parsed = parse_args(argv(&[
-            "navigera",
-            "eval",
-            "--expression",
-            "() => 40 + 2",
-            "--pretty",
-        ]))
-        .expect("valid invocation");
+        let parsed = parse_args(argv(&["navigera", "eval", "--expression", "() => 40 + 2", "--pretty"]))
+            .expect("valid invocation");
         assert!(parsed.config.pretty, "globals may trail the command");
         assert_eq!(parsed.config.engine, "chrome");
-        assert_eq!(
-            parsed.command,
-            Some(Command::Eval {
-                expression: "() => 40 + 2".into(),
-                timeout_ms: None,
-            })
-        );
+        assert_eq!(parsed.command, Some(Command::Eval { expression: "() => 40 + 2".into(), timeout_ms: None }));
     }
 
     #[test]
@@ -1878,34 +1848,76 @@ mod tests {
 
     #[test]
     fn positional_arguments_like_other_agent_clis() {
-        assert_eq!(cmd(&["goto", "example.com"]), Command::Goto { url: "example.com".into(), wait: None, timeout_ms: None });
+        assert_eq!(
+            cmd(&["goto", "example.com"]),
+            Command::Goto { url: "example.com".into(), wait: None, timeout_ms: None }
+        );
         assert_eq!(
             cmd(&["click", "@e12"]),
             Command::Click { target: TargetArgs { node_ref: Some(12), ..Default::default() }, timeout_ms: None }
         );
         assert_eq!(
             cmd(&["click", "#buy", "--timeout-ms", "900"]),
-            Command::Click { target: TargetArgs { selector: Some("#buy".into()), ..Default::default() }, timeout_ms: Some(900.0) }
+            Command::Click {
+                target: TargetArgs { selector: Some("#buy".into()), ..Default::default() },
+                timeout_ms: Some(900.0)
+            }
         );
         assert_eq!(
             cmd(&["fill", "31", "hello world"]),
-            Command::Fill { target: TargetArgs { node_ref: Some(31), ..Default::default() }, value: "hello world".into(), timeout_ms: None }
+            Command::Fill {
+                target: TargetArgs { node_ref: Some(31), ..Default::default() },
+                value: "hello world".into(),
+                timeout_ms: None
+            }
         );
         assert_eq!(
             cmd(&["click", "--text", "Add to cart"]),
-            Command::Click { target: TargetArgs { text: Some("Add to cart".into()), ..Default::default() }, timeout_ms: None }
+            Command::Click {
+                target: TargetArgs { text: Some("Add to cart".into()), ..Default::default() },
+                timeout_ms: None
+            }
         );
-        assert_eq!(cmd(&["press", "Enter"]), Command::Press { key: "Enter".into(), target: TargetArgs::default(), timeout_ms: None });
+        assert_eq!(
+            cmd(&["press", "Enter"]),
+            Command::Press { key: "Enter".into(), target: TargetArgs::default(), timeout_ms: None }
+        );
         assert_eq!(
             cmd(&["select", "7", "Canada"]),
-            Command::Select { target: TargetArgs { node_ref: Some(7), ..Default::default() }, value: vec!["Canada".into()], timeout_ms: None }
+            Command::Select {
+                target: TargetArgs { node_ref: Some(7), ..Default::default() },
+                value: vec!["Canada".into()],
+                timeout_ms: None
+            }
         );
-        assert_eq!(cmd(&["eval", "document.title"]), Command::Eval { expression: "document.title".into(), timeout_ms: None });
+        assert_eq!(
+            cmd(&["eval", "document.title"]),
+            Command::Eval { expression: "document.title".into(), timeout_ms: None }
+        );
         assert_eq!(
             cmd(&["wait", "--text", "Order placed"]),
-            Command::Wait { selector: None, text: Some("Order placed".into()), url: None, gone: None, js: None, ms: None, timeout_ms: None }
+            Command::Wait {
+                selector: None,
+                text: Some("Order placed".into()),
+                url: None,
+                gone: None,
+                js: None,
+                ms: None,
+                timeout_ms: None
+            }
         );
-        assert_eq!(cmd(&["wait", "250"]), Command::Wait { selector: None, text: None, url: None, gone: None, js: None, ms: Some(250.0), timeout_ms: None });
+        assert_eq!(
+            cmd(&["wait", "250"]),
+            Command::Wait {
+                selector: None,
+                text: None,
+                url: None,
+                gone: None,
+                js: None,
+                ms: Some(250.0),
+                timeout_ms: None
+            }
+        );
         assert_eq!(cmd(&["tab-select", "1"]), Command::TabSelect { index: 1 });
         assert_eq!(cmd(&["snapshot"]), cmd(&["ax"]));
         assert_eq!(cmd(&["close"]), Command::Quit { close_browser: false });
@@ -1924,8 +1936,7 @@ mod tests {
 
     #[test]
     fn serve_mode_has_no_command() {
-        let parsed = parse_args(argv(&["navigera", "serve", "--timeout-ms", "5000"]))
-            .expect("valid invocation");
+        let parsed = parse_args(argv(&["navigera", "serve", "--timeout-ms", "5000"])).expect("valid invocation");
         assert!(parsed.command.is_none());
         assert_eq!(parsed.config.timeout_ms, 5000.0);
     }
@@ -1933,10 +1944,7 @@ mod tests {
     #[test]
     fn help_and_invalid_invocations_are_distinguished() {
         let help = parse_args(argv(&["navigera", "--help"])).expect_err("help");
-        assert!(
-            matches!(help, ArgsError::Help(_)),
-            "explicit help is Help, not Invalid: {help:?}"
-        );
+        assert!(matches!(help, ArgsError::Help(_)), "explicit help is Help, not Invalid: {help:?}");
         let no_args = parse_args(argv(&["navigera"])).expect_err("no args");
         assert!(matches!(no_args, ArgsError::Help(_)));
         match parse_args(argv(&["navigera", "help", "click"])).expect_err("op help") {
@@ -1977,10 +1985,9 @@ mod tests {
 
     #[test]
     fn command_deserializes_from_protocol_json() {
-        let command: Command = serde_json::from_str(
-            r##"{"op":"fill","selector":"#kw","value":"600-10070","timeout_ms":10000}"##,
-        )
-        .expect("valid command");
+        let command: Command =
+            serde_json::from_str(r##"{"op":"fill","selector":"#kw","value":"600-10070","timeout_ms":10000}"##)
+                .expect("valid command");
         assert_eq!(
             command,
             Command::Fill {
@@ -1990,17 +1997,20 @@ mod tests {
             }
         );
         let command: Command = serde_json::from_str(r#"{"op":"click","ref":"@e7"}"#).expect("string ref");
-        assert_eq!(command, Command::Click { target: TargetArgs { node_ref: Some(7), ..Default::default() }, timeout_ms: None });
+        assert_eq!(
+            command,
+            Command::Click { target: TargetArgs { node_ref: Some(7), ..Default::default() }, timeout_ms: None }
+        );
         let command: Command = serde_json::from_str(r#"{"op":"select","ref":3,"values":["a","b"]}"#).expect("values");
-        assert!(matches!(command, Command::Select { ref value, .. } if value == &vec!["a".to_string(), "b".to_string()]));
+        assert!(
+            matches!(command, Command::Select { ref value, .. } if value == &vec!["a".to_string(), "b".to_string()])
+        );
     }
 
     #[test]
     fn click_targets_are_exclusive() {
-        let both = parse_args(argv(&["navigera", "click", "--ref", "1", "--selector", "a"]))
-            .expect("parses")
-            .command
-            .unwrap();
+        let both =
+            parse_args(argv(&["navigera", "click", "--ref", "1", "--selector", "a"])).expect("parses").command.unwrap();
         let mut driver_free = match both {
             Command::Click { target, .. } => target,
             _ => unreachable!(),
@@ -2028,8 +2038,20 @@ mod tests {
                 scope: TargetArgs { selector: Some("main".into()), ..Default::default() },
                 timeout_ms: None,
             },
-            Command::Select { target: TargetArgs { text: Some("Country".into()), ..Default::default() }, value: vec!["CA".into()], timeout_ms: None },
-            Command::Wait { selector: None, text: Some("Done".into()), url: None, gone: None, js: None, ms: None, timeout_ms: None },
+            Command::Select {
+                target: TargetArgs { text: Some("Country".into()), ..Default::default() },
+                value: vec!["CA".into()],
+                timeout_ms: None,
+            },
+            Command::Wait {
+                selector: None,
+                text: Some("Done".into()),
+                url: None,
+                gone: None,
+                js: None,
+                ms: None,
+                timeout_ms: None,
+            },
             Command::Quit { close_browser: false },
             Command::Quit { close_browser: true },
         ] {
@@ -2047,17 +2069,15 @@ mod tests {
 
     #[test]
     fn session_flags_and_start() {
-        let parsed = parse_args(argv(&[
-            "navigera", "--session", "work", "--idle-timeout-s", "60", "start",
-        ]))
-        .expect("valid invocation");
+        let parsed = parse_args(argv(&["navigera", "--session", "work", "--idle-timeout-s", "60", "start"]))
+            .expect("valid invocation");
         assert!(parsed.start);
         assert!(parsed.command.is_none());
         assert_eq!(parsed.config.session.as_deref(), Some("work"));
         assert_eq!(parsed.config.idle_timeout_s, 60);
 
-        let parsed = parse_args(argv(&["navigera", "title", "--session", "work", "--raw"]))
-            .expect("trailing --session");
+        let parsed =
+            parse_args(argv(&["navigera", "title", "--session", "work", "--raw"])).expect("trailing --session");
         assert_eq!(parsed.config.session.as_deref(), Some("work"));
         assert!(parsed.config.raw);
         assert!(!parsed.start);
@@ -2073,10 +2093,16 @@ mod tests {
         // Bare --attach means the user's Chrome, wherever it sits.
         assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach"]).unwrap(), (Some("chrome".into()), true));
         assert_eq!(attach(&["navigera", "-s", "me", "--attach", "start"]).unwrap(), (Some("chrome".into()), true));
-        assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach", "--headless"]).unwrap().0.as_deref(), Some("chrome"));
+        assert_eq!(
+            attach(&["navigera", "-s", "me", "start", "--attach", "--headless"]).unwrap().0.as_deref(),
+            Some("chrome")
+        );
         assert_eq!(attach(&["navigera", "-s", "me", "start", "--attach", "edge"]).unwrap().0.as_deref(), Some("edge"));
         assert_eq!(attach(&["navigera", "-s", "me", "--attach=9222", "start"]).unwrap().0.as_deref(), Some("9222"));
-        assert_eq!(attach(&["navigera", "--attach", "/tmp/ud", "-s", "me", "start"]).unwrap().0.as_deref(), Some("/tmp/ud"));
+        assert_eq!(
+            attach(&["navigera", "--attach", "/tmp/ud", "-s", "me", "start"]).unwrap().0.as_deref(),
+            Some("/tmp/ud")
+        );
         let p = parse_args(argv(&["navigera", "-s", "me", "start", "--profile", "work", "--headless"])).unwrap();
         assert_eq!(p.config.profile.as_deref(), Some("work"));
         assert!(p.config.headless);
@@ -2086,11 +2112,7 @@ mod tests {
 
     #[test]
     fn response_serializes_protocol_shape() {
-        let ok = ok_response(
-            serde_json::json!(7),
-            serde_json::json!({"url": "https://example.com/"}),
-            Instant::now(),
-        );
+        let ok = ok_response(serde_json::json!(7), serde_json::json!({"url": "https://example.com/"}), Instant::now());
         let line = serde_json::to_string(&ok).expect("serializes");
         assert!(line.contains("\"id\":7"));
         assert!(line.contains("\"ok\":true"));

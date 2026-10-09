@@ -15,14 +15,28 @@ Protocol directly, and it is built for AI agents:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/andrey-usa/navigera/master/install.sh | sh
-# or: cargo install --locked --git https://github.com/andrey-usa/navigera navigera
-navigera install-skill        # agent guide -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 
 Windows (PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/andrey-usa/navigera/master/install.ps1 | iex
+```
+
+Or with a package manager — each one installs the same prebuilt binary:
+
+| | |
+|---|---|
+| npm | `npm install -g navigera` (or `npx navigera …`) |
+| pip / uv | `pip install navigera` · `uv tool install navigera` |
+| Cargo | `cargo install --locked navigera` |
+| Homebrew | `brew install andrey-usa/tap/navigera` |
+| Scoop | `scoop bucket add andrey-usa https://github.com/andrey-usa/scoop-bucket` then `scoop install navigera` |
+
+Then give your agent the usage guide:
+
+```sh
+navigera install-skill        # -> ./.agents/skills (Gemini CLI, Codex, …); --claude -> ./.claude/skills
 ```
 
 Linux, macOS and Windows are supported. On Windows the session socket is a
@@ -78,7 +92,7 @@ The commands are `goto`, `ax`, `click`, `fill`, `type`, `press`, `select`,
   `--raw`.
 - **Help:** `navigera help <command>`.
 - **Agent guide:** the version-matched guide is
-  [`.claude/skills/navigera/SKILL.md`](.claude/skills/navigera/SKILL.md),
+  [`skills/navigera/SKILL.md`](skills/navigera/SKILL.md),
   also printed by `navigera skill`.
 - **Reference:** [docs/navigera.md](docs/navigera.md) has the full
   reference, and [llms.txt](llms.txt) is an index for LLMs.
@@ -272,11 +286,10 @@ shop [saucedemo.com](https://www.saucedemo.com), which exists for automation
 practice and takes no real payment (informational, judged from the
 confirmation and the order total).
 
-## Working on this repo (humans and agents)
+## Contributing
 
-[AGENTS.md](AGENTS.md): how to read CI results through the checks API,
-narrow `bench.yml` runs (`only`, `scenarios`), measurement rules, and the
-history policy.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, the test suites, reading
+CI results, A/B benchmarks and releasing.
 
 ## Layout
 
@@ -291,5 +304,5 @@ history policy.
 - `bench/ladder/`: driver ladder and agent-tool benchmark (`publish.json` per run, `gen_readme.py`)
 - `bench/agent-eval/`: Gemini CLI agent eval across navigera, playwright-cli and agent-browser
 - `tools/`: `cdp_check.py` (protocol correctness), `protocol_dump.sh`, `cft_matrix.py` (Chrome version matrix)
-- `.claude/skills/navigera/SKILL.md`: the agent guide (compiled into the binary: `navigera skill`)
+- `skills/navigera/SKILL.md`: the agent guide (compiled into the binary: `navigera skill`)
 - `.github/workflows/`: `ci.yml` (tests, Chrome matrix, protocol check), `bench.yml`, `agent-eval.yml`, `release.yml`, `chrome-bisect.yml`, `vendor.yml`
